@@ -345,3 +345,19 @@ better-sidebar（本仓库）作为 case 的具体动作：
     （侧边栏编辑器），无路径复制组件名。code-finder 包本身不动——onClick 是接入方
     自由实现，符合「动作可插拔」设计。
 
+### 2026-08-20 需求 §5.1 落地：注册表反查真实组件名（`af` → `Sidebar`）
+
+17. **`lookupComponentNameByPosition` 按 (path, line, column) 反查包裹组件名**：
+    需求 §5.1 的 `<af>` → `<Sidebar>`。data-locatorjs 是 path 格式（无表达式
+    id），按位置匹配注册表里最近的表达式，再沿 `wrappingComponentId` →
+    `components` 链上溯到**最外层包裹组件**返回其名（hover 内部元素也显示
+    `<Sidebar>` 而非 `<button>`）；无包裹组件/链断裂/成环回退表达式名（元素级）。
+    同时把 `LocatorExpression`/`LocatorComponent` 位置读取修正为 @locator/babel-jsx
+    真实注入形状（位置在 `loc.start`，兼容旧顶层 `start`），`components` 条目补全
+    `name`/`wrappingComponentId` 类型。resolve.ts ① 分支命中 data 属性时用注册表
+    名覆盖 minified fiber 名。**已验证（2026-08-20）：`pnpm test` 66 个全绿
+    （resolve.spec 新增 4 个用例：位置反查覆盖 minified 名 / 多级链上溯 / 无条目
+    回退 fiber 名 / 兼容旧形状）+ `pnpm build` + `pnpm typecheck` 全过。**
+    真实浏览器复测（Opt+Shift 悬停显示 `<Sidebar> Sidebar.tsx:NN:CC`）按
+    docs/README.md「be-sider case 端到端试用」流程执行。
+

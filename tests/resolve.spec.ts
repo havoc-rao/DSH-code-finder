@@ -66,8 +66,9 @@ describe('resolveHit 解析链', () => {
       '/abs/src/Sidebar.tsx': {
         filePath: '/abs/src/Sidebar.tsx',
         projectPath: '/abs',
+        // 真实注入形状：位置在 loc.start（@locator/babel-jsx）
         expressions: {
-          '0': { name: 'Sidebar', start: { line: 7, column: 2 }, end: { line: 7, column: 20 } },
+          '0': { name: 'Sidebar', loc: { start: { line: 7, column: 2 }, end: { line: 7, column: 20 } } },
         },
         components: {},
         styledDefinitions: {},
@@ -83,6 +84,90 @@ describe('resolveHit 解析链', () => {
       column: 2,
       source: 'data',
     })
+  })
+
+  it('①c data-locatorjs（path 格式）用注册表包裹组件名覆盖 minified fiber 名', () => {
+    ;(window as unknown as { __LOCATOR_DATA__: Record<string, unknown> }).__LOCATOR_DATA__ = {
+      '/abs/src/Sidebar.tsx': {
+        filePath: '/abs/src/Sidebar.tsx',
+        projectPath: '/abs',
+        // 真实注入形状：位置在 loc.start；表达式经 wrappingComponentId 指向包裹组件
+        expressions: {
+          '0': { name: 'button', loc: { start: { line: 42, column: 10 }, end: { line: 42, column: 30 } }, wrappingComponentId: 3 },
+          '1': { name: 'ToggleCluster', loc: { start: { line: 100, column: 4 }, end: { line: 100, column: 40 } }, wrappingComponentId: 3 },
+        },
+        components: {
+          '3': { name: 'Sidebar', locString: '207:7' },
+        },
+        styledDefinitions: {},
+      },
+    }
+    const element = document.createElement('div')
+    element.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
+    // 生产 React：fiber 组件名被压缩成 af
+    const fiber = makeFiber({ type: function af(): null { return null } })
+    const hit = resolveHit(element, fiber)
+    // 最近表达式是 button（元素级），但链上溯到包裹组件 → Sidebar
+    expect(hit).toEqual({
+      name: 'Sidebar',
+      path: '/abs/src/Sidebar.tsx',
+      line: 42,
+      column: 10,
+      source: 'data',
+    })
+  })
+
+  it('①f wrappingComponentId 链多级上溯取最外层包裹组件', () => {
+    ;(window as unknown as { __LOCATOR_DATA__: Record<string, unknown> }).__LOCATOR_DATA__ = {
+      '/abs/src/Sidebar.tsx': {
+        filePath: '/abs/src/Sidebar.tsx',
+        projectPath: '/abs',
+        expressions: {
+          '0': { name: 'button', loc: { start: { line: 42, column: 10 }, end: { line: 42, column: 30 } }, wrappingComponentId: 0 },
+        },
+        components: {
+          '0': { name: 'Tooltip', wrappingComponentId: 1 },
+          '1': { name: 'Sidebar' },
+        },
+        styledDefinitions: {},
+      },
+    }
+    const element = document.createElement('div')
+    element.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
+    const hit = resolveHit(element, makeFiber({ type: function af(): null { return null } }))
+    expect(hit?.name).toBe('Sidebar')
+  })
+
+  it('①d 注册表无该文件条目时回退 fiber 名（不吞掉位置）', () => {
+    ;(window as unknown as { __LOCATOR_DATA__: Record<string, unknown> }).__LOCATOR_DATA__ = {}
+    const element = document.createElement('div')
+    element.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
+    const hit = resolveHit(element, makeFiber({ type: function af(): null { return null } }))
+    expect(hit).toEqual({
+      name: 'af',
+      path: '/abs/src/Sidebar.tsx',
+      line: 42,
+      column: 10,
+      source: 'data',
+    })
+  })
+
+  it('①e 兼容旧 start 形状；无包裹组件时回退表达式名', () => {
+    ;(window as unknown as { __LOCATOR_DATA__: Record<string, unknown> }).__LOCATOR_DATA__ = {
+      '/abs/src/Sidebar.tsx': {
+        filePath: '/abs/src/Sidebar.tsx',
+        projectPath: '/abs',
+        expressions: {
+          '0': { name: 'Sidebar', start: { line: 42, column: 10 }, end: { line: 42, column: 30 } },
+        },
+        components: {},
+        styledDefinitions: {},
+      },
+    }
+    const element = document.createElement('div')
+    element.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
+    const hit = resolveHit(element, makeFiber({ type: function af(): null { return null } }))
+    expect(hit?.name).toBe('Sidebar')
   })
 
   it('② 无属性时用 fiber._debugSource（dev React 宿主）', () => {

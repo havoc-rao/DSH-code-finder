@@ -11,7 +11,7 @@
  * 组件名始终从 fiber 提取（属性里只有路径没有名字），与位置合并成完整 hit。
  */
 import { getComponentName, getDebugSource, type FiberDebugSource, type FiberLike } from './fiber'
-import { lookupLocatorData } from './locator-data'
+import { lookupComponentNameByPosition, lookupLocatorData } from './locator-data'
 
 /** hit 的来源：①②③④（④ 由 index.ts 异步补位）。 */
 export type HitSource = 'data' | 'fiber' | 'search' | 'name-only'
@@ -70,7 +70,18 @@ export function resolveHit(element: Element, fiber: FiberLike | null): CodeFinde
   if (pathAttr !== null) {
     const parsed = parseLocatorPath(pathAttr)
     if (parsed !== undefined) {
-      return { name, path: parsed.path, line: parsed.line, column: parsed.column, source: 'data' }
+      // 生产 React 下 fiber 组件名被压缩（`af`），用注册表按位置反查「包裹组件
+      // 名」覆盖——data-locatorjs 是 path 格式（无表达式 id），按位置匹配，再沿
+      // wrappingComponentId → components 链上溯到最外层组件（hover 内部元素也
+      // 显示 `<Sidebar>` 而非 `<button>`）。
+      const registryName = lookupComponentNameByPosition(parsed.path, parsed.line, parsed.column)
+      return {
+        name: registryName ?? name,
+        path: parsed.path,
+        line: parsed.line,
+        column: parsed.column,
+        source: 'data',
+      }
     }
   }
   const idAttr = element.getAttribute('data-locatorjs-id')
