@@ -117,6 +117,88 @@ setupCodeFinder({
 生产宿主无 `_debugSource`、也无权改宿主构建——**「名字级 + 搜索级」是预期行为，
 不承诺行号**。搜索命中的位置来自 host 半按 roots 扫出的「组件声明名 → file:line」。
 
+## be-sider（better-sidebar）case：端到端试用
+
+以 better-sidebar 为 case 的完整试用流程（开发机已装 DSH CLI：`dsh --version` 可用）：
+
+### 一次性准备
+
+```bash
+# 1) 构建 code-finder 本体（be-sider 通过 workspace 链接引用 lib/）
+cd ~/Documents/Projects/tools/DSH-code-finder
+pnpm build
+
+# 2) be-sider dev 构建——注入只在 NODE_ENV=development（或 CODE_FINDER=1）时发生
+cd ~/Documents/Projects/tools/dsh-plugins/DSH-better-sidebar
+NODE_ENV=development pnpm bundle
+grep -c data-locatorjs lib/client.js     # 期望 > 0（元素级注入生效）
+grep -c setupCodeFinder lib/client.js    # 期望 > 0（运行时已进 bundle）
+
+# 3) 打包 dev 产物（NODE_ENV=development 防止 pack 前 prepublishOnly 覆盖回生产版）
+NODE_ENV=development pnpm pack            # 产出 dsh-better-sidebar-0.14.0.tgz
+tar -xOf dsh-better-sidebar-0.14.0.tgz package/lib/client.js | grep -c data-locatorjs  # > 0
+```
+
+### 挂载并启动（真实 DSH 宿主）
+
+```bash
+dsh plugin --profile web add file:dsh-better-sidebar-0.14.0.tgz
+dsh web    # keyless；浏览器打开日志里的 http://127.0.0.1:<port>
+```
+
+> 不想污染真实 `web` profile：用 scratch home（e2e-mount.sh 同款）——
+> 先按 e2e-mount.sh 步骤 1 引导 `$DSH_HOME/profiles/web`（写含
+> `allowBuilds: { node-pty: true }` 的 pnpm-workspace.yaml），再
+> `DSH_HOME=... dsh plugin --profile web add file:...tgz && DSH_HOME=... dsh web`。
+
+### 验证清单（plan §9.5）
+
+| 操作 | 期望 |
+|---|---|
+| 按住 Opt+Shift 悬停 sidebar 组件 | 蓝色边框 + `<Sidebar> Sidebar.tsx:NN:CC`（元素级精确） |
+| 按住 Opt+Shift 悬停宿主 UI（chat 区） | 组件名（生产宿主无行号）+ 搜索命中时 `文件名:行`（第④层） |
+| 点击 sidebar 组件 | 本地 IDE 打开（默认 `buddycn -g file:line:col`，可配 `code` 等） |
+| 点击宿主组件（搜索也没命中） | 复制组件名到剪贴板 |
+| 本地 IDE 未装 / 关闭本地打开 | 自动回退侧边栏编辑器打开 |
+| 松开热键 / Esc | overlay 隐藏 |
+| LocatorJS 浏览器扩展（可选） | dev 页面上对 sidebar 组件同样生效（格式兼容） |
+| `pnpm build`（生产） | 产物无 `data-locatorjs`、无 runtime（零注入零负担） |
+
+### 打开方式（用户可配置）
+
+点击「打开源码」的本地 IDE CLI 由 be-sider host 配置 `openCommand` 决定（默认
+`buddycn`；空字符串 = 关闭本地打开、点击回退侧边栏编辑器）。在
+`cordis.patch.yml` / profile 插件配置里设置，例如：
+
+```yaml
+- insert:
+    - id: better-sidebar
+      name: 'dsh-better-sidebar'
+      config:
+        openCommand: code        # VS Code；或 /abs/path/to/any/ide-cli
+```
+
+命令须支持 `-g <file:line[:col]>` 参数（`buddycn` / `code` 均支持）。
+
+### 日常开发循环
+
+改 code-finder 源码 → `pnpm build` → be-sider
+`NODE_ENV=development pnpm bundle`（或后台 `NODE_ENV=development pnpm watch`）
+→ 重打 tarball + `dsh plugin --profile web add file:...tgz`（或先 `remove` 再 `add`）
+→ 刷新页面。
+
+调试：`setupCodeFinder({ debug: true })` 开 console 日志；逃生门
+`<html data-code-finder="off">` 完全关闭；试完清理
+`dsh plugin --profile web remove dsh-better-sidebar`。
+
+### 常见坑
+
+- `pnpm build`（不带 NODE_ENV）会把 `lib/client*.js` 覆盖回**无注入**版本——试完
+  生产构建要继续试用需重跑 dev 构建；
+- 搜索层依赖 host 半路由在跑（`dsh web` 起着）；首次搜索触发懒建索引——
+  `~/.dsh/source/current` 不存在时宿主组件搜不到（插件自己的 src 始终可搜）；
+- Opt+Shift 与 macOS 输入法切换冲突时：`hotkeys: 'cmd+shift'` 或 `null`。
+
 ## 兼容性与注意事项
 
 - **LocatorJS 浏览器扩展兼容**：注入的属性沿用 locatorjs 格式

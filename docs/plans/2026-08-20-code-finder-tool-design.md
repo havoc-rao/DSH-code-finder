@@ -318,3 +318,30 @@ better-sidebar（本仓库）作为 case 的具体动作：
 13. **npm 发布（v0.1.0）未执行**：plan M4 的发布一步留待后续（需要 npm 账号 /
     registry 配置）；本任务验收范围是 typecheck/test/build 全绿 + 三份接入文档。
 
+### 2026-08-20 真实试用（be-sider case）发现的两处修复
+
+14. **`createSourceIndex` 排除规则改为「相对扫描根」判定**（原为绝对路径子串/段
+    匹配）：以包形式安装的插件，其自身 `src/` 在 `node_modules/<pkg>/src` 下——按
+    绝对路径段匹配会把插件自己的源码排除掉，真实挂载后 `/code-finder/api/search`
+    对插件组件永远返回空。改为相对每个 root 的路径做排除判定（`node_modules`
+    等规则对 root 内部的目录仍生效），并补了对应测试。
+
+15. **be-sider `src/index.ts` 的 `REPOSITORY_ROOT` 必须用 `new URL('..')` 而不是
+    `'.'`**：源码文件里 `.` 指向仓库根是对的，但该常量被打包进 `lib/index.js`
+    后，运行时 `import.meta.url` 指向 `lib/`，`.` 会解析成 `<pkg>/lib/`，导致
+    roots[0] = `<pkg>/lib/src` 不存在、源码搜索永远为空（真实 `dsh web` 挂载
+    curl 验证踩到）。`tsdown.config.ts` 里的同名常量是构建期用途（配置在仓库根），
+    不受影响；`src/index.ts` 处已改为 `'..'` 并加注释防回归。
+
+### 2026-08-20 打开动作定为「本地 IDE CLI，用户可配置」（plan §8 的 onClick 落地）
+
+16. **be-sider 点击动作 = 本地 IDE CLI 打开（默认 `buddycn`，用户可配置）**：plan
+    §8 说 be-sider 把 onClick 接到 `openFile`/复制；用户决定改为「类似 `code
+    xxx` 的本地打开」——host 半新增 `open.local` API（`/sidebar/api/open.local`，
+    fenced + path 限定在搜索 roots 内拒绝越权），spawn 配置的 CLI
+    `-g <file>:<line>[:<col>]`；CLI 由 be-sider `SidebarConfig.openCommand`
+    决定（默认 `buddycn`，可配 `code`/自定义/绝对路径，空字符串 = 关闭本地打开）。
+    client 点击时优先调 `open.local`，失败/关闭回退 `ctx.betterSidebar.openFile`
+    （侧边栏编辑器），无路径复制组件名。code-finder 包本身不动——onClick 是接入方
+    自由实现，符合「动作可插拔」设计。
+

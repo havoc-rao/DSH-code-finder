@@ -18,7 +18,12 @@ export interface SourceIndexOptions {
   roots: string[]
   /** 参与扫描的扩展名；默认 ['.tsx', '.ts', '.jsx', '.js']。 */
   exts?: string[]
-  /** 排除规则（路径片段或正则）；默认 node_modules + 常见产物目录。 */
+  /**
+   * 排除规则：字符串按「相对扫描根」的路径段精确匹配（node_modules / .git /
+   * lib 等段），正则对相对路径测试；默认 node_modules + 常见产物目录。
+   * 注意按相对根判定——以包形式安装的插件其 src/ 虽在
+   * node_modules/<pkg>/src 下，仍会被正确纳入扫描。
+   */
   exclude?: Array<string | RegExp>
   /** 单个文件大小上限（字节），超过跳过；默认 1MB。 */
   maxFileSize?: number
@@ -101,14 +106,15 @@ export function extractComponentDeclarations(code: string): SourceCandidate[] {
   return candidates
 }
 
-/** 路径是否命中排除规则：字符串规则按「路径段」精确匹配（避免 'out'/'lib' 误伤
- *  layout.css、about/ 这类含子串的合法路径），正则规则对完整路径测试。 */
-function excludedPath(fullPath: string, excludes: Array<string | RegExp>): boolean {
-  const segments = fullPath.split(/[\\/]/u)
+/** 路径是否命中排除规则：字符串规则按「相对扫描根的路径段」精确匹配（避免
+ *  'out'/'lib' 误伤 layout.css、about/ 这类含子串的合法路径，也避免把以包形式
+ *  安装的插件自己 src/（在 node_modules/<pkg>/src 下）误排除），正则规则对相对路径测试。 */
+function excludedPath(relativePath: string, excludes: Array<string | RegExp>): boolean {
+  const segments = relativePath.split('/')
   for (const rule of excludes) {
     if (typeof rule === 'string') {
       if (segments.includes(rule)) return true
-    } else if (rule.test(fullPath)) {
+    } else if (rule.test(relativePath)) {
       return true
     }
   }
@@ -143,10 +149,10 @@ function parseFile(file: string): IndexedFile | null {
   }
 }
 
-/** 递归收集 roots 下所有待解析文件（相对 roots 的路径用于排除判断）。 */
+/** 递归收集 roots 下所有待解析文件（排除规则按「相对扫描根」的路径判定）。 */
 function collectFiles(roots: string[], excludes: Array<string | RegExp>, exts: string[]): string[] {
   const files: string[] = []
-  const visit = (dir: string): void => {
+  const visit = (dir: string, relative: string): void => {
     let entries
     try {
       entries = readdirSync(dir, { withFileTypes: true })
@@ -155,13 +161,13 @@ function collectFiles(roots: string[], excludes: Array<string | RegExp>, exts: s
     }
     for (const entry of entries) {
       const full = join(dir, entry.name)
-      // 用绝对路径做包含判断（node_modules / .git / lib 等片段即可命中）。
-      if (excludedPath(full, excludes)) continue
-      if (entry.isDirectory()) visit(full)
+      const rel = relative === '' ? entry.name : `${relative}/${entry.name}`
+      if (excludedPath(rel, excludes)) continue
+      if (entry.isDirectory()) visit(full, rel)
       else if (entry.isFile() && exts.includes(extname(full))) files.push(full)
     }
   }
-  for (const root of roots) visit(root)
+  for (const root of roots) visit(root, '')
   return files
 }
 
