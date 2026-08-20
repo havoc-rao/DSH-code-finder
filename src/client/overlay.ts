@@ -38,20 +38,35 @@ export function createOverlay(): OverlayHandle {
     .cf-box.visible { display: block; }
     .cf-label {
       position: absolute;
-      top: -26px;
+      top: -46px;
       left: -2px;
-      max-width: 70vw;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      padding: 3px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      max-width: min(80vw, 720px);
+      padding: 4px 8px;
       border-radius: 4px;
       background: #2563eb;
       color: #fff;
-      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       pointer-events: none;
     }
-    .cf-label.under { top: auto; bottom: -26px; }
+    .cf-label.under { top: auto; bottom: -46px; }
+    .cf-name {
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    /* 完整路径 + 行号。direction: rtl 让 text-overflow 的省略号出现在左端，
+       保留尾部「文件名:行」始终可见（路径再长也不丢行号）；plaintext
+       避免中文路径/数字被 RTL 打乱分段。 */
+    .cf-path {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      direction: rtl;
+      unicode-bidi: plaintext;
+      opacity: 0.92;
+    }
     .cf-toast {
       position: fixed;
       right: 16px;
@@ -75,6 +90,11 @@ export function createOverlay(): OverlayHandle {
   box.className = 'cf-box'
   const label = document.createElement('div')
   label.className = 'cf-label'
+  const nameEl = document.createElement('div')
+  nameEl.className = 'cf-name'
+  const pathEl = document.createElement('div')
+  pathEl.className = 'cf-path'
+  label.append(nameEl, pathEl)
   const toast = document.createElement('div')
   toast.className = 'cf-toast'
   shadow.append(box, label, toast)
@@ -103,13 +123,20 @@ export function createOverlay(): OverlayHandle {
     box.style.height = `${rect.height + 4}px`
     box.classList.add('visible')
 
-    // 标签文案：<组件名> 文件名:行:列（无位置时提示无源码信息）
-    const location = hit.path !== undefined
-      ? `${baseNameOf(hit.path)}${hit.line !== undefined ? `:${hit.line}${hit.column !== undefined ? `:${hit.column}` : ''}` : ''}`
-      : '（无源码信息）'
-    label.textContent = `<${hit.name === '' ? '未知组件' : hit.name}> ${location}`
+    // 标签两行：第一行 <组件名>，第二行 完整路径:行（不显示列，列仅用于内部
+    // 组件名反查与跳转载荷；无位置时提示无源码信息）。
+    // 完整路径直接可见（不再只显示 basename，完整路径此前仅在 title tooltip）。
+    nameEl.textContent = `<${hit.name === '' ? '未知组件' : hit.name}>`
+    if (hit.path !== undefined) {
+      const location = `${hit.path}${hit.line !== undefined ? `:${hit.line}` : ''}`
+      pathEl.textContent = location
+      pathEl.style.opacity = '0.92'
+    } else {
+      pathEl.textContent = '（无源码信息）'
+      pathEl.style.opacity = '0.7'
+    }
     label.title = hit.path ?? ''
-    label.classList.toggle('under', rect.top < 30)
+    label.classList.toggle('under', rect.top < 50)
   }
 
   const toastShow = (text: string): void => {
@@ -142,10 +169,4 @@ export function createOverlay(): OverlayHandle {
       host.remove()
     },
   }
-}
-
-/** 取路径的 basename（兼容正反斜杠）。 */
-function baseNameOf(path: string): string {
-  const parts = path.split(/[\\/]/u)
-  return parts[parts.length - 1] ?? path
 }

@@ -6,7 +6,7 @@
  *   （复用 better-sidebar ime-guard 的判定思路）；
  * - **mousemove** 按住热键 → 解析链 ①②③ → overlay.show；④ 源码搜索异步补位；
  * - **click** 按住热键 → 阻止默认行为 → `onClick(hit)`（默认复制
- *   `path:line:column`，无路径时复制组件名）；
+ *   `path:line`，无路径时复制组件名）；
  * - **destroy()** 解绑全部监听并移除 overlay。
  *
  * 生产防护：`isProductionRuntime()` 命中时返回空操作句柄（调用方按环境懒加载
@@ -22,7 +22,7 @@ export type CodeFinderHotkeys = 'alt+shift' | 'alt' | 'cmd+shift' | null
 export interface CodeFinderOptions {
   /** 触发热键；默认 'alt+shift'；null 关闭热键（overlay 仍可手动调用）。 */
   hotkeys?: CodeFinderHotkeys
-  /** 点击动作；默认复制 `path:line:column` 到剪贴板。 */
+  /** 点击动作；默认复制 `path:line` 到剪贴板。 */
   onClick?: (hit: CodeFinderHit) => void
   /** 源码搜索端点（cordis host 半提供时传入）；默认 undefined = 关闭第④层。 */
   searchEndpoint?: string
@@ -250,9 +250,9 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
       }
       return
     }
-    // 默认动作：复制 path:line:column（无路径时复制组件名）
+    // 默认动作：复制 path:line（无路径时复制组件名）
     const text = hit.path !== undefined
-      ? `${hit.path}${hit.line !== undefined ? `:${hit.line}${hit.column !== undefined ? `:${hit.column}` : ''}` : ''}`
+      ? `${hit.path}${hit.line !== undefined ? `:${hit.line}` : ''}`
       : hit.name
     void copyText(text).then(ok => {
       overlay.toast(ok ? `已复制 ${text}` : '复制失败')

@@ -25,7 +25,7 @@ code-inspector / react-code-finder）都有一块拼图但都不完整，且各�
 
 **dsh-code-finder** —— 一个 dev-only 的 React「组件 → 源码」定位器：
 
-- 按住 **Opt+Shift**（`Alt+Shift`）悬停任意 React 组件 → overlay 显示组件名 + `文件:行:列`；
+- 按住 **Opt+Shift**（`Alt+Shift`）悬停任意 React 组件 → overlay 显示组件名 + `文件:行`（不显示列）；
 - **点击** → 打开源码（IDE / 侧边栏编辑器 / 复制路径，可插拔动作）；
 - 三层定位：**构建期注入（精确）→ fiber 兜底（全组件）→ 源码搜索（尽力而为）**；
 - **插入式交付**：普通 React 项目用 vite/tsdown 插件 + 运行时一行启用；DSH 插件生态用 cordis
@@ -152,7 +152,7 @@ tsdown/vite 插件统一封装 `@locator/babel-jsx`：
 interface CodeFinderOptions {
   /** 触发键；默认 'alt+shift' */
   hotkeys?: 'alt+shift' | 'alt' | 'cmd+shift' | null
-  /** 点击动作；默认复制 `path:line:column` 到剪贴板 */
+  /** 点击动作；默认复制 `path:line` 到剪贴板 */
   onClick?: (hit: CodeFinderHit) => void
   /** 源码搜索端点（host 半提供时传入）；默认 undefined = 关闭第④层 */
   searchEndpoint?: string
@@ -360,4 +360,38 @@ better-sidebar（本仓库）作为 case 的具体动作：
     回退 fiber 名 / 兼容旧形状）+ `pnpm build` + `pnpm typecheck` 全过。**
     真实浏览器复测（Opt+Shift 悬停显示 `<Sidebar> Sidebar.tsx:NN:CC`）按
     docs/README.md「be-sider case 端到端试用」流程执行。
+
+### 2026-08-20 需求 §5.2 / §5.3 决策落地
+
+18. **搜索统一由 dsh-code-finder host 半提供（需求 §5.3）**：be-sider
+    `src/index.ts` 移除自身 `/code-finder/api` 搜索路由注册（`createSourceIndex` /
+    `handleSearchRequest` 导入、`codeFinderIndex` 建表与 `webServer.register` 块），
+    `CODE_FINDER_ROOTS` 保留（open.local 越权校验仍用，注释更新）；be-sider client
+    的 `searchEndpoint: '/code-finder/api/search'` 指向不变——端点现由 dsh-code-finder
+    host 半提供（挂载方式见 docs/README.md「be-sider case 端到端试用」）。消除
+    「be-sider 与 dsh-code-finder 同时挂载 → 重复注册同前缀」冲突。验证：be-sider
+    typecheck + 单测（见下）。
+
+19. **宿主 UI 精确行号维持「名字级 + 搜索级」（需求 §5.2，用户决策）**：不改 DSH
+    官方源码构建（AGENTS.md 硬约束 + 本机 `~/.dsh/source/current` checkout 不存在）；
+    预期行为不变，文档已明示。
+
+### 2026-08-20 需求 §6 验收：真实浏览器复测（全部通过）
+
+20. **真实浏览器复测落地（需求 §6 五项验收全绿）**：用 Playwright（be-sider 仓库的
+    `scripts/cf-recheck.mjs`，复用其 chromium 依赖）连真实 `dsh web`
+    （`http://127.0.0.1:3080`，keyless + link 挂载），12/12 断言通过：
+    - `__LOCATOR_DATA__` 67 条（含 Sidebar.tsx 表达式）、sidebar 内 166 个
+      `data-locatorjs` 属性（此前实测为 223，随面板展开度/版本变化，属正常）；
+    - 按住 Alt+Shift 悬停 sidebar 组件 → **`<Sidebar> Sidebar.tsx:1099:6`**：
+      真实组件名（非 minified）✅ + 元素级精确行列 ✅（需求 §6 第一条）；
+    - 多元素悬停 8 个样本均出标签（`<Sidebar> … | <svg> icons.tsx:80:2 | …`）；
+    - 按住热键点击 → 拦截 `/sidebar/api/open.local`，载荷
+      `{"path":"…/src/client/Sidebar.tsx","line":1099,"column":6}` ✅（§6 第三条）；
+    - 宿主 UI 悬停 → 名字级提示（生产宿主预期行为，§6 第二条）；
+    - 生产 `grep -c data-locatorjs|setupCodeFinder lib/client.js` = 0（§6 第四条）；
+    - be-sider 788 + dsh-code-finder 66 单测全绿（§6 第五条）。
+    前置要求：`NODE_ENV=development pnpm bundle`（dev 注入）+ `dsh web` 起着 +
+    profile link 挂载 be-sider（`dsh web` 直接服务 `lib/client.js`，无需重启）。
+    复测脚本保留在 be-sider `scripts/cf-recheck.mjs` 作为 case 回归工具。
 

@@ -81,8 +81,19 @@ describe('setupCodeFinder', () => {
     pressKeys({ alt: true, shift: true })
     hover(el)
     expect(boxVisible()).toBe(true)
-    const label = overlayHost()!.shadowRoot!.querySelector('.cf-label')
-    expect(label!.textContent).toContain('Sidebar.tsx:42:10')
+    const shadow = overlayHost()!.shadowRoot!
+    const label = shadow.querySelector('.cf-label')
+    expect(label!.textContent).toContain('/abs/src/Sidebar.tsx:42')
+    // 两行结构：第一行 <组件名>，第二行完整路径:行（不显示列）。
+    // jsdom 元素无 fiber/注册表 → 名字回退「未知组件」；真实名字由 fiber 提供。
+    const nameEl = shadow.querySelector('.cf-name')
+    const pathEl = shadow.querySelector('.cf-path')
+    expect(nameEl!.textContent).toBe('<未知组件>')
+    expect(pathEl!.textContent).toBe('/abs/src/Sidebar.tsx:42')
+    // 挂上 fake fiber（type 为具名函数）→ 名字升级为真实组件名
+    ;(el as unknown as Record<string, unknown>)['__reactFiber$smoke'] = { type: function Sidebar(): null { return null }, return: null }
+    hover(el)
+    expect(shadow.querySelector('.cf-name')!.textContent).toBe('<Sidebar>')
 
     // 松开热键 → 隐藏
     window.dispatchEvent(new KeyboardEvent('keyup', { altKey: false, shiftKey: true }))
@@ -116,7 +127,7 @@ describe('setupCodeFinder', () => {
     handle.destroy()
   })
 
-  it('click 默认动作：复制 path:line:column 并 toast', async () => {
+  it('click 默认动作：复制 path:line 并 toast', async () => {
     const handle = setupCodeFinder({})
     const el = document.createElement('div')
     el.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
@@ -127,7 +138,7 @@ describe('setupCodeFinder', () => {
     hover(el)
     click(el)
     await flush()
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/abs/src/Sidebar.tsx:42:10')
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/abs/src/Sidebar.tsx:42')
     const toast = overlayHost()!.shadowRoot!.querySelector('.cf-toast')
     expect(toast!.textContent).toContain('已复制')
     handle.destroy()
@@ -165,7 +176,7 @@ describe('setupCodeFinder', () => {
     pressKeys({ alt: true, shift: true })
     hover(el)
     await vi.waitFor(() => {
-      expect(overlayHost()!.shadowRoot!.querySelector('.cf-label')!.textContent).toContain('ChatPanel.tsx:12:3')
+      expect(overlayHost()!.shadowRoot!.querySelector('.cf-label')!.textContent).toContain('ChatPanel.tsx:12')
     })
     expect(fetchMock).toHaveBeenCalledWith('/code-finder/api/search', expect.objectContaining({ method: 'POST' }))
     handle.destroy()

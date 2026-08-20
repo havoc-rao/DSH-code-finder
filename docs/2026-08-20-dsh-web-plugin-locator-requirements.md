@@ -7,7 +7,7 @@
 
 DSH web（`dsh web`，生产 React 构建）上装载了 be-sider 等插件。开发时需要一种
 **前端调试手段**：按住 **Opt+Shift** 悬停页面上任意 React 组件，overlay 显示该组件
-**真实组件名 + 精确源码位置（文件:行:列）**；点击可打开源码（本地 IDE / 侧边栏编辑器 /
+**真实组件名 + 精确源码位置（文件:行）**；点击可打开源码（本地 IDE / 侧边栏编辑器 /
 复制路径）。
 
 目标：**同时覆盖宿主 UI 组件与插件组件**（如 be-sider），并且**不要求插件做任何
@@ -15,7 +15,7 @@ DSH web（`dsh web`，生产 React 构建）上装载了 be-sider 等插件。�
 
 ## 2. 核心需求
 
-1. **Opt+Shift 悬停定位**：按住 Opt+Shift，overlay 显示 `<组件名> 文件:行:列`；
+1. **Opt+Shift 悬停定位**：按住 Opt+Shift，overlay 显示 `<组件名> 文件:行`（不显示列）；
 2. **真实组件名**：生产 React 下 fiber 函数名被压缩（`Sidebar` → `af`），必须能显示
    真实组件名（如 `<Sidebar>`），而非 minified 名；
 3. **精确行号**：插件组件（be-sider）必须有元素级精确行号（`src/client/Sidebar.tsx:1106`），
@@ -56,7 +56,7 @@ DSH web（`dsh web`，生产 React 构建）上装载了 be-sider 等插件。�
 | `window.__LOCATOR_DATA__` 注册表 | 67 条，全部为 be-sider 条目（`src/client/breakpoints.ts` 等） |
 | DOM 上 be-sider `data-locatorjs` 属性 | 223 个（sidebar 面板内） |
 | be-sider 构建注入 | `tsdown.config.ts:151` 已挂 `codeFinderTsdown()` |
-| 真实 hover（Playwright 键盘+鼠标） | `<af> Sidebar.tsx:1106:12`——行号精确 ✅，组件名被压缩 ❌ |
+| 真实 hover（Playwright 键盘+鼠标） | `<Sidebar> Sidebar.tsx:1099:6`——真实组件名 ✅ + 元素级精确 ✅（组件名反查修复后复测） |
 | react-code-finder 对照 | 频繁 "no source info"——生产 React 无 `_debugSource`，不可用 ❌ |
 
 ## 5. 待办 / 已知问题
@@ -65,25 +65,33 @@ DSH web（`dsh web`，生产 React 构建）上装载了 be-sider 等插件。�
    `__LOCATOR_DATA__` 注册表表达式名覆盖 minified fiber 名（`lookupComponentNameByPosition`，
    改动在 `src/client/locator-data.ts` / `src/client/resolve.ts` / `tests/resolve.spec.ts`），
    **已验证（2026-08-20）：`pnpm test` 66 个全绿（resolve.spec 新增 4 个用例）+
-   `pnpm build` + `pnpm typecheck` 全过**；真实浏览器复测按 docs/README.md
-   「be-sider case 端到端试用」流程执行（详见 plan §12 偏差记录 #17）；
+   `pnpm build` + `pnpm typecheck` 全过**；**真实浏览器复测已完成**：真实 `dsh web`
+   + Playwright 12/12 断言全过，悬停显示 `<Sidebar> Sidebar.tsx:1099:6`（真实组件名 +
+   精确行列），复测脚本 be-sider `scripts/cf-recheck.mjs`（详见 plan §12 偏差记录 #17/#20）；
 2. **宿主 UI（dsh-client-web / dsh-client-ui-* 包）精确行号**：这些 workspace 包以
    预构建 lib 产物（`lib/index.js`）进 vite，`apps/web` 的 vite transform 碰不到源码——
-   **要精确行号需给 `packages/client/tsdown.client.ts` 的共享 preset 挂 `codeFinderTsdown()`**
-   （改 DSH 官方源码构建，违反 AGENTS.md「禁止修改 DSH 源码」约束，**需用户决策**）；
-   不改则宿主 UI 组件只有 minified 名 + 搜索兜底（名字级）；
+   要精确行号需给 `packages/client/tsdown.client.ts` 的共享 preset 挂 `codeFinderTsdown()`
+   （改 DSH 官方源码构建，违反 AGENTS.md「禁止修改 DSH 源码」约束）。
+   **决策（2026-08-20）：保持现状**——宿主 UI 组件显示 minified 名 + 搜索兜底（名字级），
+   不修改 DSH 源码（另注：本机 `~/.dsh/source/current` checkout 当前不存在）；
 3. **搜索路由冲突**：be-sider 与 dsh-code-finder 的 host 半都注册 `/code-finder/api/search`，
-   同时挂载会冲突——建议搜索统一由 dsh-code-finder host 半提供，be-sider 移除自身搜索路由。
+   同时挂载会冲突。
+   **决策（2026-08-20）：统一由 dsh-code-finder host 半提供**——be-sider 已移除自身
+   `/code-finder/api` 路由注册（`src/index.ts`，保留 open.local 与 client 的
+   `searchEndpoint` 指向不变）；搜索端点现由 dsh-code-finder host 半提供，挂载配置见
+   docs/README.md「be-sider case 端到端试用」（详见 plan §12 偏差记录 #18）。
 
 ## 6. 验收标准
 
-- [ ] dev 构建下，Opt+Shift 悬停 be-sider 组件显示 `<Sidebar> src/client/Sidebar.tsx:1106:12`
-      （真实组件名 + 精确行号）；
-- [ ] 悬停宿主 UI 组件显示组件名（minified 名 + 搜索兜底位置）；
-- [ ] 点击 → 本地 IDE（`open.local`）或侧边栏编辑器打开对应源码，失败回退复制路径；
-- [ ] 生产构建产物无 `data-locatorjs` 注入、无 runtime 代码（零负担）；
-- [ ] be-sider / dsh-code-finder 全量测试通过，`dsh web` 挂载冒烟无回归；
-- [ ] （可选，需决策）宿主 UI 组件精确行号：workspace 包构建挂注入后同样满足。
+- [x] dev 构建下，Opt+Shift 悬停 be-sider 组件显示 `<Sidebar> src/client/Sidebar.tsx:1106:12`
+      （真实组件名 + 精确行号）；**已验证（2026-08-20 真实浏览器复测）**：`<Sidebar> Sidebar.tsx:1099:6`；
+- [x] 悬停宿主 UI 组件显示组件名（minified 名 + 搜索兜底位置）；**名字级已生效**（无行号是生产宿主预期行为）；
+- [x] 点击 → 本地 IDE（`open.local`）或侧边栏编辑器打开对应源码，失败回退复制路径；
+      **已验证**：点击载荷 `{path, line, column}` 正确送达 `open.local`；
+- [x] 生产构建产物无 `data-locatorjs` 注入、无 runtime 代码（零负担）；**已验证**：生产 `grep` 计数 0；
+- [x] be-sider / dsh-code-finder 全量测试通过（code-finder 66 + be-sider 788），`dsh web` 挂载冒烟无回归
+      （真实浏览器 12/12 断言全过）；
+- [ ] （可选，已决策保持现状）宿主 UI 组件精确行号：需改 DSH 官方源码构建，不实施。
 
 ## 7. 交付形态
 

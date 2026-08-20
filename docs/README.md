@@ -1,7 +1,7 @@
 # dsh-code-finder 接入指南
 
 Dev-only React「组件 → 源码」定位工具：按住 **Opt+Shift**（`Alt+Shift`）悬停任意
-React 组件 → overlay 显示组件名 + `文件:行:列`；**点击**打开源码（动作可插拔）。
+React 组件 → overlay 显示组件名 + `文件:行`；**点击**打开源码（动作可插拔）。
 仅 dev 构建生效，生产零负担、零注入；运行时零框架依赖（不 import react）。
 
 接入方式按集成深度分三档：
@@ -41,8 +41,8 @@ if (import.meta.env.DEV) {
 ```
 
 现在按住 Opt+Shift 悬停任意 React 组件：应用自己构建的组件显示**元素级
-`文件:行:列`**（构建期注入的属性在 DOM 上，生产宿主也生效）；点按即复制
-`path:line:column`。
+`文件:行`**（构建期注入的属性在 DOM 上，生产宿主也生效）；点按即复制
+`path:line`。
 
 ## B. tsdown 项目（DSH 插件 client bundle 同款构建）
 
@@ -143,6 +143,11 @@ tar -xOf dsh-better-sidebar-0.14.0.tgz package/lib/client.js | grep -c data-loca
 
 ```bash
 dsh plugin --profile web add file:dsh-better-sidebar-0.14.0.tgz
+# 第④层源码搜索需要 dsh-code-finder host 半（be-sider 已不自带 /code-finder/api
+# 路由，见需求 2026-08-20 待办 #3）；把 host 半装进 profile 并在 cordis.patch.yml
+# 挂一行（或直接用下方 C-档两行配置，client 半可与 be-sider 的 overlay 并存——
+# setupCodeFinder 是幂等单例，后挂者先 destroy 前者）：
+dsh plugin --profile web add file:dsh-code-finder-0.1.0.tgz
 dsh web    # keyless；浏览器打开日志里的 http://127.0.0.1:<port>
 ```
 
@@ -155,14 +160,21 @@ dsh web    # keyless；浏览器打开日志里的 http://127.0.0.1:<port>
 
 | 操作 | 期望 |
 |---|---|
-| 按住 Opt+Shift 悬停 sidebar 组件 | 蓝色边框 + `<Sidebar> Sidebar.tsx:NN:CC`（元素级精确） |
-| 按住 Opt+Shift 悬停宿主 UI（chat 区） | 组件名（生产宿主无行号）+ 搜索命中时 `文件名:行`（第④层） |
+| 按住 Opt+Shift 悬停 sidebar 组件 | 蓝色边框 + `<Sidebar> Sidebar.tsx:NN:CC`（元素级精确，真实组件名） |
+| 按住 Opt+Shift 悬停宿主 UI（chat 区） | 组件名（生产宿主无行号）+ 搜索命中时 `文件名:行`（第④层，需 dsh-code-finder host 半在跑） |
 | 点击 sidebar 组件 | 本地 IDE 打开（默认 `buddycn -g file:line:col`，可配 `code` 等） |
 | 点击宿主组件（搜索也没命中） | 复制组件名到剪贴板 |
 | 本地 IDE 未装 / 关闭本地打开 | 自动回退侧边栏编辑器打开 |
 | 松开热键 / Esc | overlay 隐藏 |
 | LocatorJS 浏览器扩展（可选） | dev 页面上对 sidebar 组件同样生效（格式兼容） |
 | `pnpm build`（生产） | 产物无 `data-locatorjs`、无 runtime（零注入零负担） |
+
+> **已完成（2026-08-20，真实浏览器复测 12/12 全过）**：Playwright 连真实
+> `dsh web` 断言 `<Sidebar> Sidebar.tsx:NN:CC`（真实组件名 + 精确行列）、
+> 点击载荷送达 `open.local`、宿主 UI 名字级提示。复测脚本保留在 be-sider
+> `scripts/cf-recheck.mjs`，回归时
+> `DSH_E2E_URL=http://127.0.0.1:3080 node scripts/cf-recheck.mjs` 一条命令复跑
+> （前置：dev bundle + `dsh web` 起着 + profile link 挂载）。
 
 ### 打开方式（用户可配置）
 
@@ -195,7 +207,8 @@ dsh web    # keyless；浏览器打开日志里的 http://127.0.0.1:<port>
 
 - `pnpm build`（不带 NODE_ENV）会把 `lib/client*.js` 覆盖回**无注入**版本——试完
   生产构建要继续试用需重跑 dev 构建；
-- 搜索层依赖 host 半路由在跑（`dsh web` 起着）；首次搜索触发懒建索引——
+- 搜索层依赖 **dsh-code-finder host 半**路由在跑（be-sider 不自带 `/code-finder/api`；
+  `dsh web` 起着 + profile 挂了 host 半）；首次搜索触发懒建索引——
   `~/.dsh/source/current` 不存在时宿主组件搜不到（插件自己的 src 始终可搜）；
 - Opt+Shift 与 macOS 输入法切换冲突时：`hotkeys: 'cmd+shift'` 或 `null`。
 
