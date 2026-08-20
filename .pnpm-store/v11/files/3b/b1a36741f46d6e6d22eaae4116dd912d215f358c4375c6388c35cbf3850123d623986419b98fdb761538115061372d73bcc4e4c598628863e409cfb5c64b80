@@ -1,0 +1,5 @@
+
+
+> @locator/runtime@0.4.4 ts /Users/michaelmusil/www/locatorjs/packages/runtime
+> tsc --noEmit
+

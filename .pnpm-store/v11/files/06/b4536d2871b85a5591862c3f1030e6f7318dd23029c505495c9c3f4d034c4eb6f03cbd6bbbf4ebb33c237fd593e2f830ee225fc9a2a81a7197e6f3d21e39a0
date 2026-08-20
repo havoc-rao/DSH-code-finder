@@ -1,0 +1,48 @@
+
+
+> @locator/runtime@0.5.0-alpha.0 dev /Users/michaelmusil/www/locatorjs/packages/runtime
+> concurrently pnpm:dev:*
+
+[0m[tailwind][0m 
+[0m[tailwind][0m > @locator/runtime@0.5.0-alpha.0 dev:tailwind /Users/michaelmusil/www/locatorjs/packages/runtime
+[0m[tailwind][0m > tailwindcss -i ./src/main.css -o ./dist/output.css --watch
+[0m[tailwind][0m 
+[0m[ts][0m 
+[0m[ts][0m > @locator/runtime@0.5.0-alpha.0 dev:ts /Users/michaelmusil/www/locatorjs/packages/runtime
+[0m[ts][0m > tsc --watch --declaration --emitDeclarationOnly --noEmit false --outDir dist --preserveWatchOutput
+[0m[ts][0m 
+[0m[wrapCSS][0m 
+[0m[wrapCSS][0m > @locator/runtime@0.5.0-alpha.0 dev:wrapCSS /Users/michaelmusil/www/locatorjs/packages/runtime
+[0m[wrapCSS][0m > WATCH=true node ./scripts/wrapCSS.js
+[0m[wrapCSS][0m 
+[0m[babel][0m 
+[0m[babel][0m > @locator/runtime@0.5.0-alpha.0 dev:babel /Users/michaelmusil/www/locatorjs/packages/runtime
+[0m[babel][0m > babel src --watch --out-dir dist --extensions .js,.jsx,.ts,.tsx
+[0m[babel][0m 
+[0m[wrapCSS][0m CSS file generated
+[0m[ts][0m 
+[0m[ts][0m 2:19:53 PM - Starting compilation in watch mode...
+[0m[ts][0m 
+[0m[tailwind][0m 
+[0m[tailwind][0m Rebuilding...
+[0m[tailwind][0m 
+[0m[tailwind][0m Done in 303ms.
+[0m[babel][0m Successfully compiled 97 files with Babel (1296ms).
+[0m[babel][0m The watcher is ready.
+[0m[ts][0m 
+[0m[ts][0m 2:19:56 PM - Found 0 errors. Watching for file changes.
+[0m[tailwind][0m 
+[0m[tailwind][0m Rebuilding...
+[0m[tailwind][0m 
+[0m[tailwind][0m Done in 68ms.
+[0m[ts][0m 
+[0m[ts][0m 2:29:13 PM - File change detected. Starting incremental compilation...
+[0m[ts][0m 
+[0m[wrapCSS][0m [41m[30m ELIFECYCLE [39m[49m [31mCommand failed.[39m
+[0m[tailwind][0m [41m[30m ELIFECYCLE [39m[49m [31mCommand failed.[39m
+[0m[babel][0m [41m[30m ELIFECYCLE [39m[49m [31mCommand failed.[39m
+[0m[ts][0m [41m[30m ELIFECYCLE [39m[49m [31mCommand failed.[39m
+[0m[babel][0m [0mpnpm run dev:babel exited with code SIGINT[0m
+[0m[tailwind][0m [0mpnpm run dev:tailwind exited with code SIGINT[0m
+[0m[wrapCSS][0m [0mpnpm run dev:wrapCSS exited with code SIGINT[0m
+[0m[ts][0m [0mpnpm run dev:ts exited with code SIGINT[0m

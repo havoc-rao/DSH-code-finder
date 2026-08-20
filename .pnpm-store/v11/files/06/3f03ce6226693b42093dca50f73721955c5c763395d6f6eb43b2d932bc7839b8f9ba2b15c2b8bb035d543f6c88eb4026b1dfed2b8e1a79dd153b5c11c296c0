@@ -1,0 +1,11 @@
+{
+  "extends": "@locator/dev-config/tsconfig.base.json",
+  "include": ["src"],
+  "exclude": ["dist", "build", "node_modules", "tests/fixtures"],
+  "compilerOptions": {
+    "outDir": "dist",
+    "lib": ["ESNext", "dom"],
+    "module": "CommonJS",
+    "noEmit": false
+  }
+}

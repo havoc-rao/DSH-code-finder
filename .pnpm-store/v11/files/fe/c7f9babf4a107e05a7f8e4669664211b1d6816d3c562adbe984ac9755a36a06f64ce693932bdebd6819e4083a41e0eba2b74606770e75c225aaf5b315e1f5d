@@ -1,0 +1,5 @@
+
+
+> @locator/babel-jsx@0.5.0 build /Users/michaelmusil/www/locatorjs/packages/babel-jsx
+> tsc --outDir dist --declaration
+

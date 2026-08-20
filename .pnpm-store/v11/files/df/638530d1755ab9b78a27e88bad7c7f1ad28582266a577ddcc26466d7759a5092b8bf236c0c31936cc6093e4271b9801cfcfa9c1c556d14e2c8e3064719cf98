@@ -1,0 +1,12 @@
+
+
+> @locator/babel-jsx@0.5.0-alpha.0 dev /Users/michaelmusil/www/locatorjs/packages/babel-jsx
+> tsc --watch --outDir dist --preserveWatchOutput
+
+[[90m2:19:52 PM[0m] Starting compilation in watch mode...
+
+[[90m2:19:54 PM[0m] Found 0 errors. Watching for file changes.
+
+[[90m2:29:12 PM[0m] File change detected. Starting incremental compilation...
+
+[41m[30m ELIFECYCLE [39m[49m [31mCommand failed.[39m

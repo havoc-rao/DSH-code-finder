@@ -1,0 +1,41 @@
+{
+  "name": "@locator/babel-jsx",
+  "main": "dist/index.js",
+  "version": "0.5.1",
+  "scripts": {
+    "test": "jest tests/",
+    "test:update": "jest tests/ -u",
+    "dev": "tsc --watch --outDir dist --preserveWatchOutput",
+    "build": "tsc --outDir dist --declaration",
+    "ts": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.26.2",
+    "@babel/plugin-syntax-jsx": "^7.25.9",
+    "@babel/preset-env": "^7.26.0",
+    "@babel/preset-react": "^7.25.9",
+    "@babel/preset-typescript": "^7.26.0",
+    "@babel/traverse": "^7.26.2",
+    "@babel/types": "^7.26.0",
+    "@locator/runtime": "^0.5.1",
+    "@locator/shared": "^0.5.0"
+  },
+  "devDependencies": {
+    "@babel/preset-typescript": "^7.26.0",
+    "@locator/dev-config": "^0.5.0",
+    "@types/babel__traverse": "^7.20.6",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.9.0",
+    "babel-plugin-tester": "^11.0.4",
+    "jest": "^29.7.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  },
+  "author": "Michael Musil",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/infi-pc/locatorjs"
+  },
+  "license": "MIT",
+  "gitHead": "2950e1d3cd423214b231e73d7cd7e1cd591dcdd4"
+}

@@ -1,0 +1,30 @@
+
+
+> @locator/runtime@0.4.4 test /Users/michaelmusil/www/locatorjs/packages/runtime
+> vitest run
+
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90m/Users/michaelmusil/www/locatorjs/packages/runtime[39m
+
+[?25l [32m✓[39m [2msrc/functions/[22mgetUsableFileName[2m.test.tsx[22m[2m (4)[22m
+ [32m✓[39m [2msrc/functions/[22mtransformPath[2m.test.ts[22m[2m (3)[22m
+ [90m·[39m [2msrc/functions/[22mcropPath[2m.test.ts[22m[2m (2)[22m
+ [32m✓[39m [2msrc/functions/[22mmergeRects[2m.test.ts[22m[2m (1)[22m
+ [32m✓[39m [2msrc/functions/[22mevalTemplate[2m.test.ts[22m[2m (1)[22m
+[?25l[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G [32m✓[39m [2msrc/functions/[22mgetUsableFileName[2m.test.tsx[22m[2m (4)[22m
+ [32m✓[39m [2msrc/functions/[22mtransformPath[2m.test.ts[22m[2m (3)[22m
+ [32m✓[39m [2msrc/functions/[22mcropPath[2m.test.ts[22m[2m (2)[22m
+ [32m✓[39m [2msrc/functions/[22mmergeRects[2m.test.ts[22m[2m (1)[22m
+ [32m✓[39m [2msrc/functions/[22mevalTemplate[2m.test.ts[22m[2m (1)[22m
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G [32m✓[39m [2msrc/functions/[22mcropPath[2m.test.ts[22m[2m (2)[22m
+ [32m✓[39m [2msrc/functions/[22mevalTemplate[2m.test.ts[22m[2m (1)[22m
+ [32m✓[39m [2msrc/functions/[22mgetUsableFileName[2m.test.tsx[22m[2m (4)[22m
+ [32m✓[39m [2msrc/functions/[22mmergeRects[2m.test.ts[22m[2m (1)[22m
+ [32m✓[39m [2msrc/functions/[22mtransformPath[2m.test.ts[22m[2m (3)[22m
+
+[2m Test Files [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m      Tests [22m [1m[32m11 passed[39m[22m[90m (11)[39m
+[2m   Start at [22m 13:35:43
+[2m   Duration [22m 1.04s[2m (transform 2.17s, setup 0ms, collect 2.26s, tests 17ms, environment 1ms, prepare 516ms)[22m
+
+[?25h[?25h

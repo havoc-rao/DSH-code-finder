@@ -1,0 +1,25 @@
+
+
+> @locator/runtime@0.5.0 build /Users/michaelmusil/www/locatorjs/packages/runtime
+> concurrently pnpm:build:*
+
+[0m[babel][0m 
+[0m[babel][0m > @locator/runtime@0.5.0 build:babel /Users/michaelmusil/www/locatorjs/packages/runtime
+[0m[babel][0m > babel src --out-dir dist --extensions .js,.jsx,.ts,.tsx
+[0m[babel][0m 
+[0m[ts][0m 
+[0m[ts][0m > @locator/runtime@0.5.0 build:ts /Users/michaelmusil/www/locatorjs/packages/runtime
+[0m[ts][0m > tsc --declaration --emitDeclarationOnly --noEmit false --outDir dist
+[0m[ts][0m 
+[0m[tailwind][0m 
+[0m[tailwind][0m > @locator/runtime@0.5.0 build:tailwind /Users/michaelmusil/www/locatorjs/packages/runtime
+[0m[tailwind][0m > tailwindcss -i ./src/main.css -o ./dist/output.css
+[0m[tailwind][0m 
+[0m[tailwind][0m 
+[0m[tailwind][0m Rebuilding...
+[0m[tailwind][0m 
+[0m[tailwind][0m Done in 149ms.
+[0m[tailwind][0m [0mpnpm run build:tailwind exited with code 0[0m
+[0m[babel][0m Successfully compiled 97 files with Babel (608ms).
+[0m[babel][0m [0mpnpm run build:babel exited with code 0[0m
+[0m[ts][0m [0mpnpm run build:ts exited with code 0[0m
