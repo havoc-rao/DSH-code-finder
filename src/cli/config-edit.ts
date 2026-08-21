@@ -13,7 +13,7 @@
  * restores the snapshot verbatim when present, so hand-written edits are
  * never mangled.
  */
-import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 
 /** Marker identifiers used for idempotence and targeted removal. */
 export const VITE_IDENTIFIER = 'codeFinderVite'
@@ -41,16 +41,21 @@ function snapshot(path: string, source: string): void {
   if (readUtf8(backup) === undefined) writeFileSync(backup, source, 'utf8')
 }
 
-/** Restore the snapshot and remove it; no-op when no snapshot exists. */
+/**
+ * Restore the snapshot into place and remove the backup file. No-op when no
+ * snapshot exists. The restored content is byte-identical to what the backup
+ * held, so keeping the backup around would only leave `.restored` litter in
+ * the project after every init → remove cycle.
+ */
 export function restoreBackup(path: string): boolean {
   const backup = backupPath(path)
   const snapshotSource = readUtf8(backup)
   if (snapshotSource === undefined) return false
   writeFileSync(path, snapshotSource, 'utf8')
   try {
-    renameSync(backup, `${backup}.restored`)
+    unlinkSync(backup)
   } catch {
-    /* best effort: keep the backup file as evidence */
+    /* best effort: a leftover backup file is harmless */
   }
   return true
 }

@@ -41,6 +41,27 @@ npx @omdsh-dev/dsh-code-finder remove    # 回滚（自动备份还原，原样�
 - 幂等：重复 init 无副作用；支持 vite.config.* / tsdown.config.* / cordis.patch.yml
 - 接线后仍需 **dev 语义构建**（`NODE_ENV=development` 或 vite dev）才产生注入，见 docs/README「构建期注入生效机制」
 
+### 发布前：本地 link 安装（包未上 registry 时）
+
+未发布到 npm registry 前，`init` 的依赖安装会 404；CLI 会如实提示（不再降级到 yarn/npm 卡交互）。用 `link:` 协议走本地仓库：
+
+```bash
+# ① 全局安装 CLI（可选，等价于 npx；任意目录可用 dcf / dsh-code-finder）
+cd <DSH-code-finder 仓库路径> && npm link
+
+# ② 目标项目一键安装（自动 pnpm add -D link:<仓库> + 接线 vite/tsdown/cordis）
+cd <目标项目>
+dcf init --cwd . --link <DSH-code-finder 仓库路径>
+# 等价手动两步：
+#   pnpm add -D link:<DSH-code-finder 仓库路径>
+#   dcf init --cwd . --no-install
+```
+
+- `--link <path>`：以 `link:` 协议安装依赖（`pnpm add -D link:<path>`），绕过 registry
+- 已安装检测只查目标项目自身 `node_modules`（不会沿上级目录链误命中源码仓库而跳过安装）
+- 本地开发改 cf 源码后，目标项目重建即读到新产物（link 直指源码仓库）
+- 发布后无需任何 `--link`，`dcf init --cwd .` 一条命令走 registry 自动装依赖 + 接线；`npx dcf init` 免安装即用
+
 ## 快速开始
 
 ### vite 项目

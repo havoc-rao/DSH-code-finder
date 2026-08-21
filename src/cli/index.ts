@@ -44,6 +44,7 @@ interface Options {
   readonly install: boolean
   readonly backup: boolean
   readonly quiet: boolean
+  readonly link: string | undefined
 }
 
 function log(options: Options, message: string): void {
@@ -79,20 +80,36 @@ function probeConfigFiles(root: string): { readonly vite: string[], readonly tsd
 }
 
 function installDependency(options: Options, root: string): boolean {
-  const candidates: ReadonlyArray<readonly [tool: string, args: string[]]> = [
-    ['pnpm', ['add', '-D', PACKAGE]],
-    ['yarn', ['add', '-D', PACKAGE]],
-    ['npm', ['install', '-D', PACKAGE]],
-  ]
-  for (const [tool, args] of candidates) {
-    try {
-      execFileSync(tool, args, { cwd: root, stdio: options.quiet ? 'ignore' : 'inherit' })
-      return true
-    } catch {
-      /* try the next package manager */
+  // 已装判定只查目标项目自己的 node_modules（link / workspace / registry
+  // 安装都会落在这里）。不能用 require.resolve 沿上级链探测——它可能沿目录
+  // 链命中 DSH-code-finder 源码仓库本身（如 be-sider 与 cf 同在 tools/ 下），
+  // 造成"已装"误判而跳过真实安装。
+  if (existsSync(join(root, 'node_modules', PACKAGE, 'package.json'))) return true
+  const spec = options.link === undefined ? PACKAGE : `link:${options.link}`
+  try {
+    execFileSync('pnpm', ['add', '-D', spec], { cwd: root, stdio: options.quiet ? 'ignore' : 'inherit' })
+    return true
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('ERR_PNPM_FETCH_404') || message.includes('not in the npm registry') || message.includes(' 404 ')) {
+      // 未发布 registry：再试 yarn/npm 只会触发 corepack 下载交互卡死——
+      // 如实指引，让用户用 --link（发布前）或发布后重跑。
+      log(options, '⚠ 依赖未安装：@omdsh-dev/dsh-code-finder 尚未发布到 npm registry。')
+      log(options, '  发布前请加 --link 指向本地仓库（或先手动 link 安装，再 init --no-install）：')
+      log(options, `    dcf init --cwd . --link <DSH-code-finder 仓库路径>`)
+      return false
     }
+    // 其他错误：保守尝试 yarn / npm。
+    for (const [tool, args] of [['yarn', ['add', '-D', spec]], ['npm', ['install', '-D', spec]]] as const) {
+      try {
+        execFileSync(tool, args, { cwd: root, stdio: options.quiet ? 'ignore' : 'inherit' })
+        return true
+      } catch {
+        /* try the next */
+      }
+    }
+    return false
   }
-  return false
 }
 
 function snapshotFile(path: string, source: string, options: Options): void {
@@ -276,6 +293,7 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
   let install = true
   let backup = true
   let quiet = false
+  let link: string | undefined
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === undefined) continue
@@ -283,10 +301,17 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
       case 'init': case 'status': case 'remove':
         command = arg
         break
-      case '--help': case '-h': printHelp(); return { command: '__help__', options: { root, install, backup, quiet } }
+      case '--help': case '-h': printHelp(); return { command: '__help__', options: { root, install, backup, quiet, link } }
       case '--no-install': install = false; break
       case '--no-backup': backup = false; break
       case '--quiet': quiet = true; break
+      case '--link': {
+        const value = args[index + 1]
+        if (value === undefined) throw new CliUsageError('--link 需要一个值（本地 DSH-code-finder 仓库路径）')
+        link = resolveRoot(value)
+        index += 1
+        break
+      }
       case '--cwd': {
         const value = args[index + 1]
         if (value === undefined) throw new CliUsageError('--cwd 需要一个值')
@@ -298,7 +323,7 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
         throw new CliUsageError(`未知参数: ${arg}`)
     }
   }
-  return { command, options: { root, install, backup, quiet } }
+  return { command, options: { root, install, backup, quiet, link } }
 }
 
 /** Argument parsing failure: exits 2 at the process boundary, code-2 within runCli. */
@@ -322,6 +347,7 @@ function printHelp(): void {
   console.log('')
   console.log('选项:')
   console.log('  --cwd <dir>          目标项目根目录（默认当前目录）')
+  console.log('  --link <path>        以 link: 协议安装依赖（包未发布 registry 时指向本地仓库）')
   console.log('  --no-install         跳过依赖安装（只改配置）')
   console.log('  --no-backup          不写 .code-finder.bak 备份')
   console.log('  --quiet              静默输出')

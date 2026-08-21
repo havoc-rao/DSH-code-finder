@@ -158,7 +158,7 @@ describe('config-edit: ensureCordisRow / removeCordisRow', () => {
 })
 
 describe('restoreBackup', () => {
-  it('restores the snapshot verbatim', () => {
+  it('restores the snapshot verbatim and removes the backup', () => {
     const dir = sandbox()
     const path = join(dir, 'vite.config.ts')
     writeFileSync(path, 'original\ncontent\n')
@@ -166,6 +166,8 @@ describe('restoreBackup', () => {
     writeFileSync(path, 'tampered\n')
     expect(restoreBackup(path)).toBe(true)
     expect(readFileSync(path, 'utf8')).toBe('original\ncontent\n')
+    // Backup is consumed (deleted), leaving no .restored litter.
+    expect(() => readFileSync(`${path}.code-finder.bak`, 'utf8')).toThrow()
   })
 
   it('is a no-op when no snapshot exists', () => {
