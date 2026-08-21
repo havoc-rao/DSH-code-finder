@@ -44,6 +44,16 @@ describe('codeFinderEnabled', () => {
     vi.stubEnv('NODE_ENV', 'production')
     expect(codeFinderEnabled(true)).toBe(true)
   })
+
+  it('CODE_FINDER=0 在 dev 构建也强制关闭（总开关）', () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    vi.stubEnv('CODE_FINDER', '0')
+    expect(codeFinderEnabled(undefined)).toBe(false)
+    vi.stubEnv('CODE_FINDER', 'off')
+    expect(codeFinderEnabled(undefined)).toBe(false)
+    vi.stubEnv('CODE_FINDER', '')
+    expect(codeFinderEnabled(undefined)).toBe(true)
+  })
 })
 
 describe('shouldInstrument', () => {

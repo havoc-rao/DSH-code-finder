@@ -43,6 +43,10 @@ const TSDOWN_IMPORT = `import { codeFinderTsdown } from '${PACKAGE}/tsdown'`
 const CORDIS_ROW = [
   "- id: dsh-code-finder-mount",
   "name: '@havocrao/dsh-code-finder'",
+  // ENV 开关：`CODE_FINDER=0 pnpm dsh web` 生产部署时关闭 overlay（client 半读
+  // config.enabled；`!!js` 在 node 端 loader 求值，浏览器端拿到 boolean）。
+  "config:",
+  "  enabled: !!js process.env.CODE_FINDER !== '0'",
 ].join('\n')
 
 interface Options {

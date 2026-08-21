@@ -291,6 +291,8 @@ describe('runCli: end-to-end wiring', () => {
     const wired = readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')
     expect(wired).toContain('- id: dsh-code-finder-mount') // 与官方 patch 的 id 错开（防 load 期 duplicate）
     expect(wired).toContain("name: '@havocrao/dsh-code-finder'")
+    // ENV 开关随行：`CODE_FINDER=0` 时 node 端 loader 把 enabled 求值为 false。
+    expect(wired).toContain("enabled: !!js process.env.CODE_FINDER !== '0'")
     // 不带 disabled 表达式：官方行（id=dsh-code-finder）的退避表达式读本行的
     // disabled 必须是静态 false，否则两行互相引用 disabled 会无限递归。
     expect(wired).not.toContain('ctx.loader.entries()')

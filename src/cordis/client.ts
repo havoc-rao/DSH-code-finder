@@ -21,9 +21,19 @@ export interface CodeFinderClientContext {
   effect(callback: () => (() => void) | void, label?: string): void
 }
 
-/** 是否 dev 构建（见文件头注释）。 */
+/** client 半配置（web-app patch 的 dsh-code-finder 行 `config:`，`!!js` 在 node 端 loader 求值）。 */
+export interface CodeFinderClientConfig {
+  /** 显式关闭 overlay（生产部署用）：`CODE_FINDER=0` 时 loader 的
+   *  `enabled: !!js process.env.CODE_FINDER !== '0'` 求值为 false。 */
+  enabled?: boolean
+}
+
+/** 是否 dev 构建（见文件头注释）。`CODE_FINDER` 显式开关优先于 NODE_ENV。 */
 function isDevBuild(): boolean {
   try {
+    const flag = process.env.CODE_FINDER
+    if (flag === '0' || flag === 'off' || flag === 'false') return false
+    if (flag === '1' || flag === 'on' || flag === 'true') return true
     return process.env.NODE_ENV !== 'production'
   } catch {
     // 浏览器无 process（未经 define 替换）：按 dev 处理，调用方负责按环境加载。
@@ -32,7 +42,10 @@ function isDevBuild(): boolean {
 }
 
 /** 插件主体。 */
-export function apply(ctx: CodeFinderClientContext): void {
+export function apply(ctx: CodeFinderClientContext, config?: CodeFinderClientConfig): void {
+  // 生产部署关闭：config.enabled === false（web-app 行
+  // `enabled: !!js process.env.CODE_FINDER !== '0'`，node 端求值后传入）。
+  if (config?.enabled === false) return
   if (!isDevBuild()) return
   if (typeof document !== 'undefined' && document.documentElement.dataset.codeFinder === 'off') return
   const handle = setupCodeFinder({ searchEndpoint: '/code-finder/api/search' })

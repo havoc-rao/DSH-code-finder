@@ -27,10 +27,18 @@ export interface CodeFinderBuildOptions {
   dataAttribute?: 'path' | 'id'
 }
 
-/** Whether instrumentation is on for this build. */
+/**
+ * Whether instrumentation is on for this build. `CODE_FINDER` is the complete
+ * master switch: `0`/`off`/`false` forces off (even under a dev build),
+ * `1`/`on`/`true` forces on (even under a production build), otherwise follow
+ * the build semantics (`NODE_ENV === 'development'`).
+ */
 export function codeFinderEnabled(enabled: boolean | undefined): boolean {
   if (enabled !== undefined) return enabled
-  return process.env.NODE_ENV === 'development' || process.env.CODE_FINDER === '1'
+  const flag = process.env.CODE_FINDER
+  if (flag === '0' || flag === 'off' || flag === 'false') return false
+  if (flag === '1' || flag === 'on' || flag === 'true') return true
+  return process.env.NODE_ENV === 'development'
 }
 
 /** Should this module id be instrumented (own source only)? */
