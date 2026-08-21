@@ -153,9 +153,18 @@ function installDependency(options: Options, root: string): boolean {
   // Workspace 子目录（如 harness 的 packages/client 共享 preset）：pnpm 拒绝
   // 裸 add（ERR_PNPM_ADDING_TO_ROOT），显式 --workspace-root 重试——preset 的
   // import 本就由「仓库根启动的 tsdown」解析，装到根正是需要的。非 workspace
-  // 项目里 `-w` 会报错，无害地落到下面的 404 / fallback 分支。
+  // 项目里 `-w` 会报错，无害地落到下面的 postinstall / 404 / fallback 分支。
   if (runPnpm(['add', '--workspace-root']).ok) return true
   const message = first.output
+  // 目标项目自身的 postinstall 脚本失败（如 monorepo 根的 install-lefthook）：
+  // pnpm 会把本次 add 整体回滚（package.json 不残留），再试 yarn/npm 只会重蹈
+  // 覆辙（link: 协议下 npm 还会直接 EUNSUPPORTEDPROTOCOL）。如实指引先修脚本。
+  if (message.includes('postinstall: Failed') || message.includes('ELIFECYCLE')) {
+    log(options, '⚠ pnpm 解析依赖成功，但目标项目（或 workspace 根）的 postinstall 脚本失败，依赖已被 pnpm 回滚。')
+    log(options, '  请先修复 postinstall（例如删除残留的安装锁文件）再重跑：')
+    log(options, `    dcf init --cwd ${root}${options.link === undefined ? '' : ` --link ${options.link}`}`)
+    return false
+  }
   if (message.includes('ERR_PNPM_FETCH_404') || message.includes('not in the npm registry') || message.includes(' 404 ')) {
     // 未发布 registry：再试 yarn/npm 只会触发 corepack 下载交互卡死——
     // 如实指引，让用户用 --link（发布前）或发布后重跑。
@@ -164,8 +173,12 @@ function installDependency(options: Options, root: string): boolean {
     log(options, `    dcf init --cwd . --link <DSH-code-finder 仓库路径>`)
     return false
   }
-  // 其他错误：保守尝试 yarn / npm。
-  for (const [tool, args] of [['yarn', ['add', '-D', spec]], ['npm', ['install', '-D', spec]]] as const) {
+  // 其他错误：保守尝试 yarn / npm。`link:` 是 pnpm/yarn 专有协议，npm 不支持
+  // （EUNSUPPORTEDPROTOCOL），link 模式下跳过 npm 只试 yarn。
+  const fallbacks: ReadonlyArray<readonly [string, readonly string[]]> = options.link === undefined
+    ? [['yarn', ['add', '-D', spec]], ['npm', ['install', '-D', spec]]]
+    : [['yarn', ['add', '-D', spec]]]
+  for (const [tool, args] of fallbacks) {
     try {
       execFileSync(tool, args, { cwd: root, stdio: options.quiet ? 'ignore' : 'inherit' })
       return true
@@ -291,6 +304,15 @@ function cmdInit(options: Options): number {
   for (const path of files.cordis) { const report = wireCordisFile(path); log(options, report); if (report.startsWith('+')) changed += 1 }
   log(options, '')
   if (changed === 0) {
+    // cordis-only 目录（如 bundle 聚合包）：挂载已完成，但没有本目录的
+    // vite/tsdown 构建配置可注入——构建在上游目录进行，如实指引去向，
+    // 避免"没有可注入的目标"被误读为"接线失败"。
+    if (files.cordis.length > 0 && files.vite.length === 0 && files.tsdown.length === 0) {
+      log(options, '✗ 本目录仅 cordis.patch.yml（已接入）；无 vite/tsdown 构建配置，构建期 data-locatorjs 注入无处可挂。')
+      log(options, '  若需注入前端产物，请对实际构建目录（如含 vite.config.* / tsdown.config.* 的包）运行：')
+      log(options, `    dcf init --cwd <构建配置所在目录> --link ${options.link ?? '<DSH-code-finder 仓库路径>'}`)
+      return 0
+    }
     log(options, '✗ 没有可注入的目标（配置已接入 / 字面 plugins: [ 数组不存在，如实未改动）。')
     // Monorepo：当前目录的 tsdown/vite 被拒绝，但深层可能有 cordis.patch.yml
     // ——列出它们，让用户 --cwd 到具体 bundle 目录执行（多仓 patch 不自动改）。

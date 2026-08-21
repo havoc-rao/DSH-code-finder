@@ -44,8 +44,11 @@ dcf init --cwd packages/client --link ~/Documents/Projects/tools/DSH-code-finder
 # ④ profile 层：mount 行引用的包从 profile node_modules 解析——registry 未发布
 #    时用 dsh plugin add 的 link: 协议装进 profile（否则 boot 抛 ERR_MODULE_NOT_FOUND）
 dsh plugin --profile web add link:/Users/havoc420/Documents/Projects/tools/DSH-code-finder
-# ⑤ dev 语义构建（注入落进 client bundles）+ 启动
-pnpm exec tsx scripts/dev-web.ts --once && pnpm dsh web
+# ⑤ dev 语义构建（注入落进 client bundles）+ 启动。
+#    dev-web.ts 是常驻 watch、无 --once，且自身不设 NODE_ENV——必须显式
+#    development，否则 codeFinderEnabled 判定不注入。终端 A 构建、终端 B 起服务：
+NODE_ENV=development pnpm run dev:web    # 终端 A（首次运行前需先有一次 pnpm run build，见 §5）
+pnpm dsh web                             # 终端 B
 ```
 
 > harness 的 `apps/web` 不需要也**不要**再 `dcf init`——它无 .tsx 组件源码，
@@ -70,7 +73,9 @@ dcf init --cwd packages/bundle/web-app --link /Users/havoc420/Documents/Projects
   （同名异 id 启用时退避）让官方行让位，单一活跃；
 - 依赖 link 到 `web-app` 子包的 `node_modules`。
 
-幂等：重复执行显示「已接入（无改动）」。回滚：`dcf remove --cwd packages/bundle/web-app`
+幂等：重复执行显示「已接入（无改动）」；本目录无 vite/tsdown 构建配置时 dcf
+会如实提示「cordis 已接入，构建期注入请到实际构建目录（L3 = §4 的
+`packages/client`）」。回滚：`dcf remove --cwd packages/bundle/web-app`
 （`--keep-deps` 只回滚接线、保留依赖）。
 
 > **monorepo 根跑会提示，不会越界**：`dcf init --cwd <harness 根>` 因为根是
@@ -93,7 +98,7 @@ dcf init --cwd packages/client --link /Users/havoc420/Documents/Projects/tools/D
 
 效果（实测）：`tsdown.client.ts` 仅 2 处改动——顶部 import + `clientConfig()`
 的 `plugins: [codeFinderTsdown(), {`；`staticLinkedConfig` 等数组零污染；
-`dev-web.ts --once` 后 client bundles 注入 402 处/包。
+`NODE_ENV=development pnpm run dev:web` 首轮构建后 client bundles 注入 402 处/包。
 
 ## 5. 构建姿势
 
@@ -103,15 +108,27 @@ dcf init --cwd packages/client --link /Users/havoc420/Documents/Projects/tools/D
 
 | 场景 | 命令 | 注入 |
 |---|---|---|
-| dev 一次性重建（推荐开发/验证） | `pnpm exec tsx scripts/dev-web.ts --once` | ✓（脚本内置 `NODE_ENV=development` + **src 直编**，client bundles 注入） |
-| dev watch 循环 | `pnpm run dev:web` | ✓ |
+| dev watch 循环（推荐开发/验证） | `NODE_ENV=development pnpm run dev:web`（另开终端 `pnpm dsh web`） | ✓（**src 直编**，client bundles 注入） |
 | serve（只 serve 不构建） | `pnpm dsh web` | 无关（读已烘焙属性） |
 | 全量生产构建 | `pnpm run build` | ✗ 0 处（发布正确行为） |
 | 只重编前端 shell | `pnpm run build:web` | ✗（vite 默认 production） |
+
+- **`dev-web.ts` 没有 `--once`**：参数只有 `[--poll[=ms]]`，本身是常驻 watch
+  （tsc + tsdown + vite 三路，任一退出即报错终止整个脚本）。
+- **`dev-web.ts` 不内置 NODE_ENV**：注入判定在 dcf 侧
+  （`src/build/transform.ts` 的 `codeFinderEnabled`）——
+  `NODE_ENV === 'development'` 才注入，`CODE_FINDER=1` 可强制开、`CODE_FINDER=0`
+  强制关。环境没设 NODE_ENV 时 watch 跑得欢但产物零注入，必须显式
+  `NODE_ENV=development`。
+- **首次运行前需要一次全量构建**：`dev-web.ts` 三路 watcher 都在上一次
+  `pnpm run build` 的产物上增量，不 bootstrap 缺失树。
+- "一次性重建即退"没有官方命令：要么 watch（推荐），要么 `CODE_FINDER=1`
+  对 tsc/tsdown/vite 各 stage 各跑一次非 watch 版本。
+
 **陷阱**：root 的 `build:dev` 用的是 `NODE_ENV=developer`（**不是**
 `development`）→ 不会注入，别被名字误导。`pnpm run build` 会把 dev 产物
 覆盖回无注入版本——dev 中途手滑跑过，hover 退回「只有组件名」，重跑
-`dev-web.ts --once` 恢复。
+`NODE_ENV=development pnpm run dev:web` 恢复。
 
 ### 5.1 运行时统一 NODE_ENV（生产部署零 hover）
 
@@ -165,7 +182,15 @@ dcf remove --cwd packages/bundle/web-app
   link 在子包下根级解析不到。
 - **`prepare`/`postinstall` 陷阱**：安装触发重建会以生产语义覆盖 dev 产物，
   install 后 hover 变无信息——`grep -c data-locatorjs <bundle>` 自查，被覆盖
-  就重跑 `dev-web.ts --once`。
+  就重跑 `NODE_ENV=development pnpm run dev:web`。
+- **workspace 根 postinstall 失败会让 pnpm add 整体回滚**（实测）：如 harness
+  的 `install-lefthook.mjs` 遇残留的 `.git/dsh-lefthook-install.lock` 失败 →
+  `pnpm add` 虽已写入 `+ @havocrao/dsh-code-finder link:…` 也整体报错回滚
+  （`package.json` 不残留条目，但 node_modules 的 link 链接留成孤儿）；随后
+  dcf fallback 到 npm 时必报 `EUNSUPPORTEDPROTOCOL`（`link:` 协议 npm 不认识，
+  属预期噪音）。修复：确认无 lefthook 安装器在跑后删除该 lock 重跑；孤儿链接
+  会在下次 `pnpm install` 被对账清掉，补一条正式记录：
+  `cd packages/bundle/web-app && pnpm add -D link:/…/DSH-code-finder`。
 - **monorepo 多 patch**：harness 有 5 个 `cordis.patch.yml`，dcf 只对
   `--cwd` 明确指向的那个动手；根跑只提示。
 - **`ctx.config` 不可读**：cordis 4 中插件 apply 读 `ctx.config` 会抛
