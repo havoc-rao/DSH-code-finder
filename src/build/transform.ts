@@ -11,8 +11,17 @@
  * (no _debugSource needed), which is exactly the gap the runtime's resolve
  * chain (src/client/resolve.ts) fills for components the app built itself.
  */
+import { createRequire } from 'node:module'
 import { transformAsync } from '@babel/core'
 import babelJsx from '@locator/babel-jsx'
+
+// babel 的 preset/plugin 若以裸包名写字符串，会在运行时从「宿主项目」解析
+// （babel 的 cwd/filename 解析规则）——宿主没装 @babel/* 时 transform 静默
+// 失败（catch → null → 0 注入）。改从本包自己的 node_modules 定位绝对路径，
+// 让注入不依赖宿主是否安装 babel。createRequire(import.meta.url) 在打包后
+// 指向 lib/tsdown.js / lib/vite.js，上溯到本包 node_modules 即可命中。
+const require = createRequire(import.meta.url)
+const TYPESCRIPT_PRESET = require.resolve('@babel/preset-typescript')
 
 export interface CodeFinderBuildOptions {
   /** Force on/off; default: process.env.NODE_ENV === 'development' || CODE_FINDER=1 */
@@ -90,8 +99,10 @@ export async function transformWithCodeFinder(
       compact: false,
       // TSX is parsed (types stripped); JSX is left for the bundler's own
       // pipeline (rolldown/vite handle it), only the locator attributes and
-      // the __LOCATOR_DATA__ IIFE are added.
-      presets: [['@babel/preset-typescript', { isTSX: true, allExtensions: true, allowDeclareFields: true }]],
+      // the __LOCATOR_DATA__ IIFE are added. TYPESCRIPT_PRESET is an absolute
+      // path resolved from THIS package (see the top of the file) so hosts
+      // without a babel install still get instrumentation.
+      presets: [[TYPESCRIPT_PRESET, { isTSX: true, allExtensions: true, allowDeclareFields: true }]],
       plugins: [[babelJsx, { dataAttribute: options.dataAttribute ?? 'path' }]],
     })
     if (!result?.code) return null

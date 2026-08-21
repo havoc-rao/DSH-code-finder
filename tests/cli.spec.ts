@@ -291,8 +291,9 @@ describe('runCli: end-to-end wiring', () => {
     const wired = readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')
     expect(wired).toContain('- id: dsh-code-finder-mount') // 与官方 patch 的 id 错开（防 load 期 duplicate）
     expect(wired).toContain("name: '@havocrao/dsh-code-finder'")
-    // ENV 开关随行：`CODE_FINDER=0` 时 node 端 loader 把 enabled 求值为 false。
-    expect(wired).toContain("enabled: !!js process.env.CODE_FINDER !== '0'")
+    // NODE_ENV 统一开关随行：生产部署 `NODE_ENV=production` 时 node 端 loader
+    // 把 disabled 求值为 true → entry 不 apply（overlay 不挂载）。
+    expect(wired).toContain("disabled: !!js process.env.NODE_ENV === 'production'")
     // 不带 disabled 表达式：官方行（id=dsh-code-finder）的退避表达式读本行的
     // disabled 必须是静态 false，否则两行互相引用 disabled 会无限递归。
     expect(wired).not.toContain('ctx.loader.entries()')
@@ -311,20 +312,27 @@ describe('runCli: end-to-end wiring', () => {
     const otherPatchDir = join(dir, 'packages', 'bundle', 'headless')
     mkdirSync(patchDir, { recursive: true })
     mkdirSync(otherPatchDir, { recursive: true })
-    const patch = ['- insert:', '    - id: ui-theme', "      name: '@deepseek-ai/dsh-client-ui-theme'", ''].join('\n')
+    // 宿主形态（顶层 override 行）——web-app 场景，dcf 才挂 overlay 行。
+    const patch = ['- id: host-surface', '  config: {}', '- insert:', '    - id: ui-theme', "      name: '@deepseek-ai/dsh-client-ui-theme'", ''].join('\n')
+    const pluginPatch = ['- insert:', '    - id: ui-theme', "      name: '@deepseek-ai/dsh-client-ui-theme'", ''].join('\n')
     writeFileSync(join(patchDir, 'cordis.patch.yml'), patch)
-    writeFileSync(join(otherPatchDir, 'cordis.patch.yml'), patch)
+    writeFileSync(join(otherPatchDir, 'cordis.patch.yml'), pluginPatch)
     writeFileSync(join(dir, 'package.json'), '{}\n')
 
     const code = await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
     expect(code).toBe(1) // 不自动注入 → 失败 + 提示
     // 深层 patch 都未被改动。
     expect(readFileSync(join(patchDir, 'cordis.patch.yml'), 'utf8')).toBe(patch)
-    expect(readFileSync(join(otherPatchDir, 'cordis.patch.yml'), 'utf8')).toBe(patch)
+    expect(readFileSync(join(otherPatchDir, 'cordis.patch.yml'), 'utf8')).toBe(pluginPatch)
 
-    // --cwd 到具体目录才注入。
+    // --cwd 到具体目录才注入（宿主形态挂行）。
     expect(await runCli(['init', '--cwd', patchDir, '--no-install', '--quiet'])).toBe(0)
     expect(readFileSync(join(patchDir, 'cordis.patch.yml'), 'utf8')).toContain('- id: dsh-code-finder-mount')
+
+    // 插件形态（仅 insert 块）init：跳过挂载（overlay 由宿主提供，防 duplicate）。
+    expect(await runCli(['init', '--cwd', otherPatchDir, '--no-install', '--quiet'])).toBe(0)
+    expect(readFileSync(join(otherPatchDir, 'cordis.patch.yml'), 'utf8')).toBe(pluginPatch)
+    expect(readFileSync(join(otherPatchDir, 'cordis.patch.yml'), 'utf8')).not.toContain('dsh-code-finder')
   })
 
   it('rejects unknown subcommands with exit code 2', async () => {

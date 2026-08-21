@@ -40,13 +40,16 @@ const TSDOWN_IMPORT = `import { codeFinderTsdown } from '${PACKAGE}/tsdown'`
 // false，不会触发递归求值；若本行也写 disabled 且引用官方行 disabled，两行
 // 互相读对方的 disabled 会无限递归（Maximum call stack size exceeded）。
 // 幂等/删除按 name（任何 id 的已有同类挂载都会被识别，避免 /code-finder/api 双注册）。
+// NODE_ENV 统一控制（构建期 codeFinderEnabled 已跟随 NODE_ENV，这里管运行时
+// overlay 的挂载）：`!!js` 在 node 端 loader 求值，读真实 process.env——
+// dev（NODE_ENV 未设/development）→ disabled=false 挂载；生产部署
+// `NODE_ENV=production pnpm dsh web` → disabled=true，entry 不 apply（host 半
+// 与 client 半都不挂载）。单行静态 disabled（只读 env、不读其他行的 disabled）
+// 不会递归。CODE_FINDER 仍是构建期逃生门（codeFinderEnabled），运行时不再需要。
 const CORDIS_ROW = [
   "- id: dsh-code-finder-mount",
   "name: '@havocrao/dsh-code-finder'",
-  // ENV 开关：`CODE_FINDER=0 pnpm dsh web` 生产部署时关闭 overlay（client 半读
-  // config.enabled；`!!js` 在 node 端 loader 求值，浏览器端拿到 boolean）。
-  "config:",
-  "  enabled: !!js process.env.CODE_FINDER !== '0'",
+  "disabled: !!js process.env.NODE_ENV === 'production'",
 ].join('\n')
 
 interface Options {
@@ -216,6 +219,14 @@ function wireTsdownFile(path: string): string {
 function wireCordisFile(path: string): string {
   let source = readSource(path) ?? ''
   if (source.includes("'@havocrao/dsh-code-finder'")) return `  ${basenameDisplay(path)}: 已接入（无改动）`
+  // 宿主 / 插件区分：cordis.patch.yml 顶层存在 `- id:` override 行（不在 insert
+  // 块内）= 页面宿主 / 聚合层（如 web-app），挂 overlay 行；只有 `- insert:` 块
+  // = 插件型（如 better-sidebar），overlay 由宿主全局提供，跳过挂载防
+  // "duplicate loader entry id"（同一 mount id 在 profile 里出现两次）。
+  const isHostLayer = /^-(?:\s*id:| overrides:)/mu.test(source)
+  if (!isHostLayer) {
+    return `  ${basenameDisplay(path)}: 插件型 patch（仅 insert 块）——overlay 由宿主提供，跳过挂载（只做构建期注入即可）`
+  }
   const result = ensureCordisRow(source, CORDIS_ROW, 'dsh-code-finder')
   source = result.source
   writeSource(path, source)
