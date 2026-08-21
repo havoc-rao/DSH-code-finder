@@ -6,7 +6,7 @@
  * covering every wiring target (vite / tsdown / cordis) and the rollback +
  * idempotence contracts.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -248,14 +248,40 @@ describe('runCli: end-to-end wiring', () => {
 
     await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
     const wired = readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')
-    expect(wired).toContain('- id: dsh-code-finder')
+    expect(wired).toContain('- id: dsh-code-finder-mount') // 与官方 patch 的 id 错开（防 load 期 duplicate）
     expect(wired).toContain("name: '@havocrao/dsh-code-finder'")
-    expect(wired).toContain('ctx.loader.entries()') // 双挂防护 disabled 表达式随行
+    // 不带 disabled 表达式：官方行（id=dsh-code-finder）的退避表达式读本行的
+    // disabled 必须是静态 false，否则两行互相引用 disabled 会无限递归。
+    expect(wired).not.toContain('ctx.loader.entries()')
 
     await runCli(['remove', '--cwd', dir, '--quiet'])
     const clean = readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')
     expect(clean).not.toContain('code-finder')
     expect(clean).toContain('ui-theme')
+  })
+
+  it('init from a monorepo root does NOT auto-inject deep patches; it lists them for --cwd', async () => {
+    const dir = sandbox()
+    // deepseek-harness 布局：root 无配置，深层有多个 cordis.patch.yml——
+    // 自动注入有歧义（多个 patch 谁该挂？），CLI 只应提示 --cwd 目标。
+    const patchDir = join(dir, 'packages', 'bundle', 'web-app')
+    const otherPatchDir = join(dir, 'packages', 'bundle', 'headless')
+    mkdirSync(patchDir, { recursive: true })
+    mkdirSync(otherPatchDir, { recursive: true })
+    const patch = ['- insert:', '    - id: ui-theme', "      name: '@deepseek-ai/dsh-client-ui-theme'", ''].join('\n')
+    writeFileSync(join(patchDir, 'cordis.patch.yml'), patch)
+    writeFileSync(join(otherPatchDir, 'cordis.patch.yml'), patch)
+    writeFileSync(join(dir, 'package.json'), '{}\n')
+
+    const code = await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
+    expect(code).toBe(1) // 不自动注入 → 失败 + 提示
+    // 深层 patch 都未被改动。
+    expect(readFileSync(join(patchDir, 'cordis.patch.yml'), 'utf8')).toBe(patch)
+    expect(readFileSync(join(otherPatchDir, 'cordis.patch.yml'), 'utf8')).toBe(patch)
+
+    // --cwd 到具体目录才注入。
+    expect(await runCli(['init', '--cwd', patchDir, '--no-install', '--quiet'])).toBe(0)
+    expect(readFileSync(join(patchDir, 'cordis.patch.yml'), 'utf8')).toContain('- id: dsh-code-finder-mount')
   })
 
   it('rejects unknown subcommands with exit code 2', async () => {

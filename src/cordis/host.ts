@@ -79,7 +79,11 @@ export function resolveHostConfig(config?: CodeFinderHostConfig): ResolvedCodeFi
  * fiber 释放（插件卸载 / HMR）时 dispose。
  */
 export function apply(ctx: CodeFinderHostContext, config?: CodeFinderHostConfig): void {
-  const resolved = resolveHostConfig(config ?? ctx.config)
+  // 只用 apply 第二参：cordis 4 中 `ctx.config` 是受控属性（未经 inject/schema
+  // 声明访问会抛 "cannot get property config without inject"）。本插件不导出
+  // Config schema（避免引入 schemastery 重依赖），loader 会把 entry 的原始
+  // config 原样传入第二参（无配置时为 undefined，resolveHostConfig 补默认值）。
+  const resolved = resolveHostConfig(config)
   ctx.effect(() => {
     const index: SourceIndex = createSourceIndex({
       roots: resolved.roots,

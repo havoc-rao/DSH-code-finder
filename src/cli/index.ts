@@ -15,7 +15,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   ensureCordisRow,
   ensureImport,
@@ -30,13 +30,18 @@ import {
 const PACKAGE = '@havocrao/dsh-code-finder'
 const VITE_IMPORT = `import { codeFinderVite } from '${PACKAGE}/vite'`
 const TSDOWN_IMPORT = `import { codeFinderTsdown } from '${PACKAGE}/tsdown'`
-// Row id 与包内官方 patch（cordis.patch.yml）一致；幂等/删除按 name（任何 id 的
-// 已有同类挂载都会被识别，避免 /code-finder/api 双注册）。disabled 表达式与
-// 包内 patch 同款：宿主树里已有启用态的 dsh-code-finder 行时本行自动退避。
+// Row id 刻意与包内官方 patch（cordis.patch.yml）错开：官方行 id 是
+// `dsh-code-finder`。包声明 `dsh.bundle.patch`，被 bundle 栈 reconcile 时官方
+// patch 会随包自动应用——若本行也用同一 id，loader 在 include 阶段直接抛
+// "duplicate loader entry id"（disabled 是运行期评估，救不了 load 期重复 id）。
+// 本行（`dsh-code-finder-mount`）**不带 disabled 表达式**，永远启用并占据挂载：
+// 官方行的表达式（同名异 id 行启用时退避）会读本行的 disabled——它是静态
+// false，不会触发递归求值；若本行也写 disabled 且引用官方行 disabled，两行
+// 互相读对方的 disabled 会无限递归（Maximum call stack size exceeded）。
+// 幂等/删除按 name（任何 id 的已有同类挂载都会被识别，避免 /code-finder/api 双注册）。
 const CORDIS_ROW = [
-  "- id: dsh-code-finder",
+  "- id: dsh-code-finder-mount",
   "name: '@havocrao/dsh-code-finder'",
-  'disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === \'@havocrao/dsh-code-finder\' && e.options.id !== \'dsh-code-finder\' && !e.disabled)"',
 ].join('\n')
 
 interface Options {
@@ -77,6 +82,39 @@ function probeConfigFiles(root: string): { readonly vite: string[], readonly tsd
     if (existsSync(join(root, name))) cordis.push(join(root, name))
   }
   return { vite, tsdown, cordis }
+}
+
+/** Recursively find cordis.patch.yml under `root` (max 4 levels, skips heavy dirs). */
+function scanCordisPatch(root: string): string[] {
+  const found: string[] = []
+  const skip = new Set(['node_modules', 'dist', 'lib', '.git', '.codebuddy', 'build', 'coverage'])
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 4) return
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (skip.has(entry)) continue
+      const absolute = join(dir, entry)
+      let stat
+      try {
+        stat = statSync(absolute)
+      } catch {
+        continue
+      }
+      if (stat.isDirectory()) {
+        walk(absolute, depth + 1)
+      } else if (entry === 'cordis.patch.yml' || entry === 'cordis.patch.yaml') {
+        found.push(absolute)
+      }
+      if (found.length >= 3) return
+    }
+  }
+  walk(root, 1)
+  return found
 }
 
 function installDependency(options: Options, root: string): boolean {
@@ -192,14 +230,39 @@ function cmdInit(options: Options): number {
   }
   const files = probeConfigFiles(options.root)
   if (files.vite.length === 0 && files.tsdown.length === 0 && files.cordis.length === 0) {
-    log(options, '⚠ 未发现 vite.config.* / tsdown.config.* / cordis.patch.yml，无法自动接线。')
-    log(options, '  （若项目用其他 bundler，请手动加 codeFinderVite() / codeFinderTsdown()）')
+    log(options, '⚠ 当前目录未发现 vite.config.* / tsdown.config.* / cordis.patch.yml。')
+    // Monorepo 提示：不自动越界改子目录的 patch（多仓可能多个，歧义），
+    // 列出检测到的深层位置让用户用 --cwd 精确指定目标。
+    const deep = scanCordisPatch(options.root)
+    if (deep.length > 0) {
+      log(options, `  检测到 ${deep.length} 个深层 cordis.patch.yml，请用 --cwd 指定目标：`)
+      for (const path of deep.slice(0, 5)) log(options, `    dcf init --cwd ${dirname(path)}`)
+    } else {
+      log(options, '  （若项目用其他 bundler，请手动加 codeFinderVite() / codeFinderTsdown()）')
+    }
     return 1
   }
-  for (const path of files.vite) log(options, wireViteFile(path))
-  for (const path of files.tsdown) log(options, wireTsdownFile(path))
-  for (const path of files.cordis) log(options, wireCordisFile(path))
+  let changed = 0
+  for (const path of files.vite) { const report = wireViteFile(path); log(options, report); if (report.startsWith('+')) changed += 1 }
+  for (const path of files.tsdown) { const report = wireTsdownFile(path); log(options, report); if (report.startsWith('+')) changed += 1 }
+  for (const path of files.cordis) { const report = wireCordisFile(path); log(options, report); if (report.startsWith('+')) changed += 1 }
   log(options, '')
+  if (changed === 0) {
+    log(options, '✗ 没有可注入的目标（配置已接入 / 字面 plugins: [ 数组不存在，如实未改动）。')
+    // Monorepo：当前目录的 tsdown/vite 被拒绝，但深层可能有 cordis.patch.yml
+    // ——列出它们，让用户 --cwd 到具体 bundle 目录执行（多仓 patch 不自动改）。
+    if (files.cordis.length === 0) {
+      const deep = scanCordisPatch(options.root)
+      if (deep.length > 0) {
+        log(options, `  检测到 ${deep.length} 个深层 cordis.patch.yml，请用 --cwd 指定目标：`)
+        for (const path of deep.slice(0, 5)) log(options, `    dcf init --cwd ${dirname(path)}`)
+      }
+    }
+    log(options, '  若目标构建配置是条件式/预设内建（如 monorepo 共享 preset），请手动接入：')
+    log(options, `    vite:   plugins: [codeFinderVite()] + import '${PACKAGE}/vite'`)
+    log(options, `    tsdown: plugins: [codeFinderTsdown()] + import '${PACKAGE}/tsdown'`)
+    return 0
+  }
   log(options, '✔ 接线完成。构建请用 dev 语义（NODE_ENV=development；vite dev 亦可），')
   log(options, '  生产构建不带 data-locatorjs 注入。取消接入：npx dsh-code-finder remove')
   return 0
