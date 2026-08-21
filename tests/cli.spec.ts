@@ -231,6 +231,47 @@ describe('runCli: end-to-end wiring', () => {
     expect(clean).toContain('plugins: [b()]')
   })
 
+  it('init on a shared tsdown preset injects ONLY the clientConfig plugins array', async () => {
+    const dir = sandbox()
+    // deepseek-harness `packages/client/tsdown.client.ts` shape: `clientConfig`
+    // is what every client plugin package builds through; other functions
+    // (staticLinkedConfig) carry their own plugins arrays that must stay clean.
+    const preset = [
+      'export function clientConfig(id: string, entry: string) {',
+      '  return {',
+      '    plugins: [{',
+      "      name: 'dsh-client-bundle-purity',",
+      '    }],',
+      '  }',
+      '}',
+      '',
+      'export function staticLinked(id: string) {',
+      '  return {',
+      '    plugins: [{',
+      "      name: 'static-linked',",
+      '    }],',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    writeFileSync(join(dir, 'tsdown.config.ts'), preset)
+    writeFileSync(join(dir, 'package.json'), '{}\n')
+
+    await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
+    const wired = readFileSync(join(dir, 'tsdown.config.ts'), 'utf8')
+    expect(wired).toContain("import { codeFinderTsdown } from '@havocrao/dsh-code-finder/tsdown'")
+    const clientBlock = wired.slice(wired.indexOf('clientConfig'), wired.indexOf('staticLinked'))
+    const staticBlock = wired.slice(wired.indexOf('staticLinked'))
+    expect(clientBlock).toContain('codeFinderTsdown()')       // 只注入 clientConfig
+    expect(staticBlock).not.toContain('codeFinderTsdown()')   // staticLinkedConfig 不动
+
+    // remove 也干净回退（其余函数内容保留）。
+    await runCli(['remove', '--cwd', dir, '--quiet'])
+    const clean = readFileSync(join(dir, 'tsdown.config.ts'), 'utf8')
+    expect(clean).not.toContain('codeFinderTsdown')
+    expect(clean).toContain('static-linked')
+  })
+
   it('init wires a cordis patch and remove strips the row', async () => {
     const dir = sandbox()
     const patch = [

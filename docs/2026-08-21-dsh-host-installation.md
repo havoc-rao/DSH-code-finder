@@ -39,10 +39,9 @@ pnpm build
 # ① 构建 code-finder 本体（见 §1）
 # ② L2：挂 overlay 插件（dcf 自处理：link 安装 + patch 注入 + 幂等）
 dcf init --cwd packages/bundle/web-app --link ~/Documents/Projects/tools/DSH-code-finder
-# ③ L3：根级依赖（preset 的 import 由仓库根启动的 tsdown 解析）
-pnpm add -D link:/Users/havoc420/Documents/Projects/tools/DSH-code-finder --workspace-root
-# ④ L3：preset 加 codeFinderTsdown()（见 §3，手动一行，一次生效所有 client 包）
-# ⑤ dev 语义构建（注入落进 client bundles）+ 启动
+# ③ L3：共享 preset 一键注入（clientConfig 精准注入，覆盖所有 client 包）
+dcf init --cwd packages/client --link ~/Documents/Projects/tools/DSH-code-finder
+# ④ dev 语义构建（注入落进 client bundles）+ 启动
 pnpm exec tsx scripts/dev-web.ts --once && pnpm dsh web
 ```
 
@@ -76,31 +75,22 @@ dcf init --cwd packages/bundle/web-app --link /Users/havoc420/Documents/Projects
 > 并列出检测到的深层 `cordis.patch.yml` + 对应 `--cwd` 命令（harness 有 5 个
 > patch，自动注入有歧义，故 CLI 只提示、不自动改）。
 
-## 4. L3：client bundles 共享 preset 注入（主力，手动一行）
+## 4. L3：client bundles 共享 preset 注入（主力，dcf 一键）
 
 页面大多数组件来自 client 插件包（`packages/client/*`），它们共享
-`packages/client/tsdown.client.ts` 的 `clientBundle()` preset 构建。给 preset
-加一行，**所有 client 包同时获得元素级注入**。
+`packages/client/tsdown.client.ts` 的 `clientBundle()` preset 构建。dcf 检测到
+`clientConfig()` 共享 preset 时**只精准注入该函数的 plugins 数组**（其余数组
+如 `staticLinkedConfig` 不动），**所有 client 包同时获得元素级注入**：
 
 ```bash
-# ① 根级安装依赖（preset 的 import 由「从仓库根启动的 tsdown」解析）
-pnpm add -D link:/Users/havoc420/Documents/Projects/tools/DSH-code-finder --workspace-root
-# 注意：pnpm add 无 --link 选项，本地链接用 link:<path> 协议或直接传目录。
+# 一键：workspace 子目录安装（--workspace-root 自动重试）+ import + clientConfig 精准注入
+dcf init --cwd packages/client --link /Users/havoc420/Documents/Projects/tools/DSH-code-finder
+# 幂等：重复执行「已接入（无改动）」；回滚：dcf remove --cwd packages/client
 ```
 
-```ts
-// ② packages/client/tsdown.client.ts —— clientConfig() 的 plugins 数组（约 line 531）
-import { codeFinderTsdown } from '@havocrao/dsh-code-finder/tsdown'
-// ...
-plugins: [
-  codeFinderTsdown(),      // ← 只加这一个数组；dev-only，生产构建是 no-op
-  // ...原有插件不动
-]
-```
-
-> 为什么不建议 `dcf init --cwd packages/client`：dcf 的 tsdown 注入会匹配
-> preset 里**所有** `plugins: [` 数组（含 `staticLinkedConfig` 等不需要的），
-> 不精准；`clientConfig()` 那一个数组手动加最干净。
+效果（实测）：`tsdown.client.ts` 仅 2 处改动——顶部 import + `clientConfig()`
+的 `plugins: [codeFinderTsdown(), {`；`staticLinkedConfig` 等数组零污染；
+`dev-web.ts --once` 后 client bundles 注入 402 处/包。
 
 ## 5. 构建姿势
 

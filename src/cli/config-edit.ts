@@ -107,6 +107,37 @@ export function ensurePluginsEntry(source: string, identifier: string, expressio
   return { source: out, changed }
 }
 
+/**
+ * Insert `<expression>,` into the plugins array INSIDE the `clientConfig`
+ * function of a shared tsdown preset (deepseek-harness's
+ * `packages/client/tsdown.client.ts` shape). Every client plugin package builds
+ * through that function, so one edit there covers them all; the preset also
+ * contains OTHER plugins arrays (`staticLinkedConfig` etc.) that must NOT be
+ * touched. Falls back to {@link ensurePluginsEntry} when the file has no
+ * `clientConfig` function. Idempotent per identifier.
+ */
+export function ensureClientConfigEntry(source: string, identifier: string, expression: string): { source: string, changed: boolean } {
+  if (source.includes(expression)) return { source, changed: false }
+  const fn = /(?:^|\n)\s*(?:export\s+)?function\s+clientConfig\s*\(/u.exec(source)
+  if (fn === null) return ensurePluginsEntry(source, identifier, expression)
+  const bodyStart = fn.index + fn[0].length
+  const opener = /plugins\s*:\s*\[/u.exec(source.slice(bodyStart))
+  if (opener === null) return { source, changed: false }
+  const absoluteIndex = bodyStart + opener.index
+  const comma = absoluteIndex + opener[0].length
+  const eol = detectEol(source)
+  const nextChar = source[comma]
+  if (nextChar === '\n' || nextChar === '\r' || nextChar === undefined) {
+    // Array opener at line end: insert on the next line with +2 indent.
+    const lineStart = source.lastIndexOf('\n', absoluteIndex) + 1
+    const indentMatch = /^[ \t]*/u.exec(source.slice(lineStart, absoluteIndex))
+    const indent = indentMatch?.[0] ?? ''
+    return { source: source.slice(0, comma) + `${eol}${indent}  ${expression},` + source.slice(comma), changed: true }
+  }
+  // Inline array: splice right after the opener.
+  return { source: source.slice(0, comma) + `${expression}, ` + source.slice(comma), changed: true }
+}
+
 /** Remove `<identifier>(),` entries from every plugins array (line and inline forms). */
 export function removePluginsEntry(source: string, identifier: string): string {
   const eol = detectEol(source)

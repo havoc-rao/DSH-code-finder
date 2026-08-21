@@ -13,10 +13,11 @@
  * backup files are ever written (the audit snapshot was dropped as more
  * noise than value — remove() only strips what init() added).
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import {
+  ensureClientConfigEntry,
   ensureCordisRow,
   ensureImport,
   ensurePluginsEntry,
@@ -75,7 +76,9 @@ function probeConfigFiles(root: string): { readonly vite: string[], readonly tsd
   for (const name of ['vite.config.ts', 'vite.config.mts', 'vite.config.mjs', 'vite.config.js']) {
     if (existsSync(join(root, name))) vite.push(join(root, name))
   }
-  for (const name of ['tsdown.config.ts', 'tsdown.config.mjs', 'tsdown.config.js']) {
+  // 含共享 preset 命名：deepseek-harness 的 client 包共用 `tsdown.client.ts`
+  // （`clientConfig()` 内编所有 client 插件），dcf 应对它做 clientConfig 精准注入。
+  for (const name of ['tsdown.config.ts', 'tsdown.client.ts', 'tsdown.config.mjs', 'tsdown.config.js']) {
     if (existsSync(join(root, name))) tsdown.push(join(root, name))
   }
   for (const name of ['cordis.patch.yml', 'cordis.patch.yaml']) {
@@ -124,30 +127,46 @@ function installDependency(options: Options, root: string): boolean {
   // 造成"已装"误判而跳过真实安装。
   if (existsSync(join(root, 'node_modules', PACKAGE, 'package.json'))) return true
   const spec = options.link === undefined ? PACKAGE : `link:${options.link}`
-  try {
-    execFileSync('pnpm', ['add', '-D', spec], { cwd: root, stdio: options.quiet ? 'ignore' : 'inherit' })
-    return true
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message.includes('ERR_PNPM_FETCH_404') || message.includes('not in the npm registry') || message.includes(' 404 ')) {
-      // 未发布 registry：再试 yarn/npm 只会触发 corepack 下载交互卡死——
-      // 如实指引，让用户用 --link（发布前）或发布后重跑。
-      log(options, '⚠ 依赖未安装：@havocrao/dsh-code-finder 尚未发布到 npm registry。')
-      log(options, '  发布前请加 --link 指向本地仓库（或先手动 link 安装，再 init --no-install）：')
-      log(options, `    dcf init --cwd . --link <DSH-code-finder 仓库路径>`)
-      return false
+  const runPnpm = (args: readonly string[]): { ok: boolean, output: string } => {
+    // stdout+stderr 都 pipe 捕获（pnpm 的警告可能写 stdout，如
+    // ERR_PNPM_ADDING_TO_ROOT），非 quiet 时手动回显，兼顾显示与检测。
+    const result = spawnSync('pnpm', [...args, '-D', spec], {
+      cwd: root,
+      stdio: ['inherit', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    })
+    if (!options.quiet) {
+      if (result.stdout !== null && result.stdout !== '') process.stdout.write(result.stdout)
+      if (result.stderr !== null && result.stderr !== '') process.stderr.write(result.stderr)
     }
-    // 其他错误：保守尝试 yarn / npm。
-    for (const [tool, args] of [['yarn', ['add', '-D', spec]], ['npm', ['install', '-D', spec]]] as const) {
-      try {
-        execFileSync(tool, args, { cwd: root, stdio: options.quiet ? 'ignore' : 'inherit' })
-        return true
-      } catch {
-        /* try the next */
-      }
-    }
+    return { ok: result.status === 0, output: `${result.stdout ?? ''}\n${result.stderr ?? ''}` }
+  }
+  const first = runPnpm(['add'])
+  if (first.ok) return true
+  // Workspace 子目录（如 harness 的 packages/client 共享 preset）：pnpm 拒绝
+  // 裸 add（ERR_PNPM_ADDING_TO_ROOT），显式 --workspace-root 重试——preset 的
+  // import 本就由「仓库根启动的 tsdown」解析，装到根正是需要的。非 workspace
+  // 项目里 `-w` 会报错，无害地落到下面的 404 / fallback 分支。
+  if (runPnpm(['add', '--workspace-root']).ok) return true
+  const message = first.output
+  if (message.includes('ERR_PNPM_FETCH_404') || message.includes('not in the npm registry') || message.includes(' 404 ')) {
+    // 未发布 registry：再试 yarn/npm 只会触发 corepack 下载交互卡死——
+    // 如实指引，让用户用 --link（发布前）或发布后重跑。
+    log(options, '⚠ 依赖未安装：@havocrao/dsh-code-finder 尚未发布到 npm registry。')
+    log(options, '  发布前请加 --link 指向本地仓库（或先手动 link 安装，再 init --no-install）：')
+    log(options, `    dcf init --cwd . --link <DSH-code-finder 仓库路径>`)
     return false
   }
+  // 其他错误：保守尝试 yarn / npm。
+  for (const [tool, args] of [['yarn', ['add', '-D', spec]], ['npm', ['install', '-D', spec]]] as const) {
+    try {
+      execFileSync(tool, args, { cwd: root, stdio: options.quiet ? 'ignore' : 'inherit' })
+      return true
+    } catch {
+      /* try the next */
+    }
+  }
+  return false
 }
 
 function basenameDisplay(path: string): string {
@@ -168,7 +187,14 @@ function wireTsdownFile(path: string): string {
   let source = readSource(path) ?? ''
   if (source.includes(TSDOWN_IDENTIFIER)) return `  ${basenameDisplay(path)}: 已接入（无改动）`
   source = ensureImport(source, TSDOWN_IMPORT)
-  const result = ensurePluginsEntry(source, TSDOWN_IDENTIFIER, `${TSDOWN_IDENTIFIER}()`)
+  // Shared-preset detection (deepseek-harness `packages/client/tsdown.client.ts`
+  // shape): `function clientConfig(...)` is the plugins array every client
+  // plugin package builds through. Inject ONLY that array so the preset's other
+  // plugins arrays (`staticLinkedConfig`, ...) stay untouched.
+  const isClientPreset = /(?:^|\n)\s*(?:export\s+)?function\s+clientConfig\s*\(/u.test(source)
+  const result = isClientPreset
+    ? ensureClientConfigEntry(source, TSDOWN_IDENTIFIER, `${TSDOWN_IDENTIFIER}()`)
+    : ensurePluginsEntry(source, TSDOWN_IDENTIFIER, `${TSDOWN_IDENTIFIER}()`)
   if (!result.changed) {
     // No literal `plugins: [` array found (e.g. `plugins: cond ? [] : [...]`):
     // roll back the import we just added — a dangling unused import is worse
@@ -178,7 +204,9 @@ function wireTsdownFile(path: string): string {
     return `  ${basenameDisplay(path)}: 未发现字面 plugins: [ 数组（条件式插件列表无法安全注入，未改动）`
   }
   writeSource(path, result.source)
-  return `+ ${basenameDisplay(path)}: 所有 plugins 数组加入 codeFinderTsdown() 与 import`
+  return isClientPreset
+    ? `+ ${basenameDisplay(path)}: clientConfig() 的 plugins 数组加入 codeFinderTsdown() 与 import（共享 preset，覆盖所有 client 包）`
+    : `+ ${basenameDisplay(path)}: 所有 plugins 数组加入 codeFinderTsdown() 与 import`
 }
 
 function wireCordisFile(path: string): string {
