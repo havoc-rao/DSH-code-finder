@@ -97,7 +97,12 @@ export function createOverlay(): OverlayHandle {
   label.append(nameEl, pathEl)
   const toast = document.createElement('div')
   toast.className = 'cf-toast'
-  shadow.append(box, label, toast)
+  // label 必须挂在 box 内：.cf-label 的 absolute 定位（top:-46px/left:-2px）以
+  // 最近的定位祖先为包含块——box 是 absolute 定位，挂 box 内才贴边框左上角；
+  // 此前误挂 shadow 根，包含块变成 fixed host（整个视口），标签被定在视口
+  // 顶部上方永远不可见，只剩蓝框（.click 复制走 toast，不受影响）。
+  box.append(label)
+  shadow.append(box, toast)
 
   let toastTimer: number | undefined
   let disposed = false

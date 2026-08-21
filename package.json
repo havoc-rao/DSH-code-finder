@@ -18,8 +18,12 @@
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/types/client/index.d.ts",
+      "types": "./lib/types/cordis/client.d.ts",
       "default": "./lib/client.js"
+    },
+    "./runtime": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/runtime.js"
     },
     "./cordis": {
       "types": "./lib/types/cordis/host.d.ts",
@@ -39,9 +43,19 @@
     },
     "./package.json": "./package.json"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/runtime.js",
     "lib/cordis.js",
     "lib/cordis-client.js",
     "lib/tsdown.js",

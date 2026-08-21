@@ -35,7 +35,7 @@ export default defineConfig({
 ```ts
 // 应用入口（仅 dev 生效，生产 tree-shake 掉）
 if (import.meta.env.DEV) {
-  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/client')
+  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/runtime')
   setupCodeFinder({})
 }
 ```
@@ -56,7 +56,7 @@ plugins: [codeFinderTsdown()],   // dev-only 注入 src/client/**（node_modules
 ```ts
 // 插件 client 入口（src/client/index.tsx，仅 dev 构建生效）
 if (process.env.NODE_ENV !== 'production') {
-  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/client')
+  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/runtime')
   setupCodeFinder({ onClick: (hit) => { /* 打开/复制 hit.path */ } })
 }
 ```
@@ -65,33 +65,39 @@ if (process.env.NODE_ENV !== 'production') {
 
 ## C. cordis 纯 runtime（DSH 插件生态，零代码）
 
-DSH 插件的 `cordis.patch.yml` 挂上 host/client 两个入口即可，全 UI 获得
-Opt+Shift 定位 + 源码搜索路由：
+DSH 插件的 `cordis.patch.yml` **挂一行**即可——同一 entry 双面：node 面
+（包主入口 re-export 的 host 插件）注册源码搜索路由，浏览器面（包的
+`dsh.client` 声明 → 宿主扫描 serve `/plugins/.../client.js` wire bundle）自动
+启用 overlay，全 UI 获得 Opt+Shift 定位 + 源码搜索：
 
 ```yaml
 - insert:
     - id: code-finder
-      name: '@omdsh-dev/dsh-code-finder'        # host 半：/code-finder/api/search 路由
+      name: '@omdsh-dev/dsh-code-finder'        # 一行双面：host 半 + client 半
       config: { roots: ['/abs/path/to/plugin/src', '~/.dsh/source/current'] }
-    - id: code-finder-client
-      name: '@omdsh-dev/dsh-code-finder/cordis/client'   # client 半：dev 自动启用 overlay
 ```
 
-- host 半（`.../cordis`）：建源码索引（默认 roots `~/.dsh/source/current` +
-  当前进程 `cwd/src`）+ 注册 `POST /code-finder/api/search`；自带 loopback
-  信任 fence，只读、只扫配置 roots、拒绝越权；
-- client 半（`.../cordis/client`）：仅 dev 构建（`process.env.NODE_ENV !==
-  'production'`）自动 `setupCodeFinder({ searchEndpoint: '/code-finder/api/search' })`；
-  逃生门：`<html data-code-finder="off">` 可完全关闭；
+> 注：`.../cordis` 与 `.../cordis/client` 作为**独立入口**保留（包主入口已
+> re-export host 半；`.../client` 是 harness-wire bundle），一般用不着显式引用。
+
+- host 半：建源码索引（默认 roots `~/.dsh/source/current` + 当前进程
+  `cwd/src`）+ 注册 `POST /code-finder/api/search`；自带 loopback 信任 fence，
+  只读、只扫配置 roots、拒绝越权；
+- client 半：wire bundle 里按「无 process 即 dev」默认启用
+  `setupCodeFinder({ searchEndpoint: '/code-finder/api/search' })`；逃生门：
+  `<html data-code-finder="off">` 可完全关闭；
 - 想给插件自己的组件加**元素级行号**：再在自己的构建里加 B 档的
-  `codeFinderTsdown()`——不加也不影响名字级/搜索级。
+  `codeFinderTsdown()`（需 `NODE_ENV=development`，见「构建期注入生效机制」）
+  ——不加也不影响名字级/搜索级。
 
 ## 纯 runtime（不装构建插件）
 
-只 import client 入口即可（等价于 C 档 client 半）：
+只 import runtime 入口即可（等价于 C 档 client 半；无 cordis 宿主时直接集成
+用 `.../runtime`，`.../client` 是 cordis 宿主的 wire bundle，不是给人 import
+的）：
 
 ```ts
-import { setupCodeFinder } from '@omdsh-dev/dsh-code-finder/client'
+import { setupCodeFinder } from '@omdsh-dev/dsh-code-finder/runtime'
 
 setupCodeFinder({
   hotkeys: 'alt+shift',              // 'alt+shift' | 'alt' | 'cmd+shift' | null（null 关闭）
@@ -105,6 +111,42 @@ setupCodeFinder({
 })
 // 返回 { destroy() }：HMR / 卸载时调用
 ```
+
+## 构建期注入生效机制（NODE_ENV=development）
+
+**注入发生在「编译 UI 源码的那个进程」**，不是运行期：`codeFinderTsdown()` /
+`codeFinderVite()` 在 bundler 的 `transform` 阶段把 `data-locatorjs="<abs>:<line>:<col>"`
+静态属性打进出产物（JSX 还是源码形态时），之后服务器 / 浏览器完全不需要
+任何环境变量，属性早已烘焙在 bundle 里。
+
+开关（`src/build/transform.ts` 的 `codeFinderEnabled`）：
+
+```ts
+return process.env.NODE_ENV === 'development' || process.env.CODE_FINDER === '1'
+```
+
+| 构建场景 | 进程的 NODE_ENV | data-locatorjs |
+|---|---|---|
+| 应用/插件自己的 `pnpm build`（默认） | 生产语义 | ✗ 0 处（发布正确行为） |
+| dev 构建（显式 `NODE_ENV=development`） | development | ✓ 元素级注入 |
+| harness `dev:web` / tsdown watch | 未设则默认 development | ✓（watch 循环内置） |
+| 应用发布/CI | production | ✗ 零注入零负担（设计意图） |
+| **运行期**（`dsh web` 服务器、浏览器） | 无关 | 属性已烘焙，读 DOM 即可 |
+
+要点：
+
+- **开发流程只跑 dev 语义构建**（如 better-sidebar 的 `pnpm build:dev`，即
+  `NODE_ENV=development tsdown`）；`pnpm build` 是发布用，会把 `lib/*.js`
+  覆盖回**无注入**版本——dev 中途手滑跑过一次，hover 就退回"只有组件名"，
+  重跑 dev 构建即可恢复。
+- **`prepare` / `postinstall` 陷阱**：若包有 `prepare: tsdown` 或类似脚本，
+  每次 `pnpm install` 都会用生产语义重新构建并覆盖 dev 产物——install 后
+  hover 变无信息，先自查 `grep -c data-locatorjs lib/client.js`（>0 为注入
+  在），被覆盖就重跑 dev 构建。
+- **逃生口 `CODE_FINDER=1`**：生产构建想带注入时显式开启（不推荐发布用）。
+- **注入 ≠ 定位唯一途径**：无 `data-locatorjs` 时还有 fiber `_debugSource`
+  （dev React）→ 组件名 → 第④层 roots 名字搜索兜底；`data-locatorjs` 只是
+  让行号最精确。（见下节「宿主 UI 的定位能力」）
 
 ## 宿主 UI 的定位能力（预期行为）
 

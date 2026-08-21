@@ -1,0 +1,48 @@
+# dsh-code-finder bundle patch
+#
+# This file is the `dsh.bundle.patch` layer of the published npm package: when
+# installed through the official CLI —
+#
+#   dsh plugin --profile <name> add @omdsh-dev/dsh-code-finder
+#
+# — the command reconciles `dsh.profile.bundles` against installed packages
+# and, seeing this declaration, appends `@omdsh-dev/dsh-code-finder` to the
+# bundle stack. The profile boot then merges THIS patch (a single `insert` of
+# the plugin row) exactly like the manual cordis.patch.yml mount line used
+# before. No profile file edits needed — one command installs and mounts.
+#
+# The row is two-faced in one entry: the node face (this entry's package root)
+# registers the /code-finder/api/search route (host half); the browser face
+# comes from the same entry's `dsh.client` declaration — the host scans it and
+# serves the /plugins/@omdsh-dev/dsh-code-finder/client.js wire bundle, which
+# the cordis kernel imports as { name, inject, apply } (client half, the
+# Opt+Shift hover overlay).
+#
+# Roots: the host half's layer-4 name search falls back to the core defaults
+# (~/.dsh/source/current + <cwd>/src), which rarely match the profile's UI
+# layout. Override per profile by appending to that profile's own
+# cordis.patch.yml:
+#
+#   - overrides:
+#       dsh-code-finder:
+#         config:
+#           roots:
+#             - !!js process.cwd()
+#             - /absolute/path/to/plugin/UI/src
+#
+# Precision note: data-locatorjs build-time injection (bundler plugins
+# `@omdsh-dev/dsh-code-finder/tsdown` / `/vite`) still needs one line in the
+# UI project's build config — a CLI cannot edit another project's bundler —
+# but roots-override gives path-level resolution with zero build changes.
+#
+# Double-mount guard: a profile that already mounts this package under its own
+# manual row (or an aggregate bundle) would register /code-finder/api twice
+# and fail the plugin tree at boot ("duplicate prefix route"). The `!!js`
+# disabled expression backs THIS row off when another *enabled* entry already
+# mounts `@omdsh-dev/dsh-code-finder`; the manual/aggregate instance then owns
+# the locator. Surfaced before this row in entry-list order only, so the
+# manual row must precede the bundle row when both exist.
+- insert:
+    - id: dsh-code-finder
+      name: '@omdsh-dev/dsh-code-finder'
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@omdsh-dev/dsh-code-finder' && e.options.id !== 'dsh-code-finder' && !e.disabled)"

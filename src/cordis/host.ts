@@ -98,3 +98,9 @@ export function apply(ctx: CodeFinderHostContext, config?: CodeFinderHostConfig)
     return () => index.dispose()
   }, 'dsh-code-finder: source index + search route')
 }
+
+/**
+ * DSH/cordis 插件默认导出（cordis-loader 只认 `default` 或函数本身——
+ * 命名导出 namespace 会被判为 invalid plugin）。命名导出保留供编程式挂载。
+ */
+export default { name, inject, apply }

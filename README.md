@@ -44,7 +44,7 @@ export default defineConfig({
 ```ts
 // 入口（仅 dev 生效，生产 tree-shake 掉）
 if (import.meta.env.DEV) {
-  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/client')
+  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/runtime')
   setupCodeFinder({})
 }
 ```
@@ -58,16 +58,17 @@ import { codeFinderTsdown } from '@omdsh-dev/dsh-code-finder/tsdown'
 // plugins: [codeFinderTsdown()],
 ```
 
-### DSH 插件（cordis，零代码）
+### DSH 插件（cordis，零代码，一行双面）
 
 ```yaml
-# cordis.patch.yml
+# cordis.patch.yml —— 一行同时挂 host 半（搜索路由）与 client 半（overlay）：
+# host 半来自包主入口（re-export cordis/host.ts 的 apply），client 半来自包
+# package.json 的 dsh.client 声明 → 宿主扫描后 serve /plugins/.../client.js
+# wire bundle（window.__ModuleLoader__.load 契约），浏览器 kernel 自动加载。
 - insert:
     - id: code-finder
-      name: '@omdsh-dev/dsh-code-finder'                    # host 半：搜索路由
+      name: '@omdsh-dev/dsh-code-finder'
       config: { roots: ['/abs/path/to/plugin/src'] }
-    - id: code-finder-client
-      name: '@omdsh-dev/dsh-code-finder/cordis/client'      # client 半：dev 自动启用
 ```
 
 ## 触发与动作
@@ -89,12 +90,18 @@ setupCodeFinder({
 
 | 入口 | 内容 |
 |---|---|
-| `@omdsh-dev/dsh-code-finder` | Node 侧：`createSourceIndex` + `handleSearchRequest` |
-| `.../client` | 运行时 overlay：`setupCodeFinder`（零框架依赖） |
-| `.../cordis` | cordis 插件 host 半：`/code-finder/api/search` 路由 + 信任 fence |
-| `.../cordis/client` | cordis 插件 client 半：dev 自动 `setupCodeFinder` |
+| `@omdsh-dev/dsh-code-finder` | Node 侧：`createSourceIndex` + `handleSearchRequest` + **cordis host 插件**（`name`/`apply`/`inject` re-export） |
+| `.../client` | **cordis 插件 client 半（harness-wire bundle）**：`window.__ModuleLoader__.load({id, factory})` 契约，宿主 `/plugins/.../client.js` 端点直接 serve |
+| `.../runtime` | 运行时 overlay（ESM）：`setupCodeFinder`（零框架依赖）——直接集成 / 自定义宿主用 |
+| `.../cordis` | cordis 插件 host 半独立入口（包根已 re-export，一般用不着） |
+| `.../cordis/client` | cordis 插件 client 半独立入口（ESM；wire bundle 在 `.../client`） |
 | `.../tsdown` | tsdown/rolldown 构建期注入插件（`codeFinderTsdown`） |
 | `.../vite` | vite 构建期注入插件（`codeFinderVite`） |
+
+> 根 `package.json` 带 `dsh.client` 声明（`{ inject: [], platform: 'web' }`）：cordis 宿主
+> （如 deepseek-harness web-app）在 patch 挂载本包时自动发现浏览器半并注入 bootstrap
+> roster——外部工程无需任何 client 接线。构建期 `data-locatorjs` 注入仍走各工程的
+> bundler 插件（`.../tsdown`、`.../vite`），或靠 host 半的 `roots` 名字搜索兜底。
 
 ## 许可证
 
