@@ -31,13 +31,15 @@ hover 一个元素时按优先级取源码位置：
 发布后可用 `npx` 免安装自动接线 / 诊断 / 回滚：
 
 ```bash
-npx @omdsh-dev/dsh-code-finder init      # 自动装依赖(pnpm/yarn/npm) + 接线 vite/tsdown/cordis
-npx @omdsh-dev/dsh-code-finder status    # 诊断接线状态 + 产物注入抽查
-npx @omdsh-dev/dsh-code-finder remove    # 回滚（自动备份还原，原样恢复）
-# 可选: --cwd <dir>  --no-install  --no-backup  --quiet
+npx @havocrao/dsh-code-finder init      # 自动装依赖(pnpm/yarn/npm) + 接线 vite/tsdown/cordis
+npx @havocrao/dsh-code-finder status    # 诊断接线状态 + 产物注入抽查
+npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + 移除依赖
+# 可选: --cwd <dir>  --no-install  --keep-deps  --link <path>  --quiet
 ```
 
-- 每次编辑自动备份 `<file>.code-finder.bak`，`remove` 优先原样还原备份（手写改动不被破坏）
+- 不产生任何备份文件（副作用零残留）
+- `remove` 是**完整卸载**：只精确移除 CLI 自己加的 import/plugins 条目/cordis 行
+  （接线后你的手动修改原样保留），并连带移除依赖
 - 幂等：重复 init 无副作用；支持 vite.config.* / tsdown.config.* / cordis.patch.yml
 - 接线后仍需 **dev 语义构建**（`NODE_ENV=development` 或 vite dev）才产生注入，见 docs/README「构建期注入生效机制」
 
@@ -70,7 +72,7 @@ dcf init --cwd . --link <DSH-code-finder 仓库路径>
 // vite.config.ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { codeFinderVite } from '@omdsh-dev/dsh-code-finder/vite'
+import { codeFinderVite } from '@havocrao/dsh-code-finder/vite'
 
 export default defineConfig({
   plugins: [react(), codeFinderVite()],
@@ -80,7 +82,7 @@ export default defineConfig({
 ```ts
 // 入口（仅 dev 生效，生产 tree-shake 掉）
 if (import.meta.env.DEV) {
-  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/runtime')
+  const { setupCodeFinder } = await import('@havocrao/dsh-code-finder/runtime')
   setupCodeFinder({})
 }
 ```
@@ -89,7 +91,7 @@ if (import.meta.env.DEV) {
 
 ```ts
 // tsdown.config.ts
-import { codeFinderTsdown } from '@omdsh-dev/dsh-code-finder/tsdown'
+import { codeFinderTsdown } from '@havocrao/dsh-code-finder/tsdown'
 // client bundle 的 plugins 数组里加：
 // plugins: [codeFinderTsdown()],
 ```
@@ -103,7 +105,7 @@ import { codeFinderTsdown } from '@omdsh-dev/dsh-code-finder/tsdown'
 # wire bundle（window.__ModuleLoader__.load 契约），浏览器 kernel 自动加载。
 - insert:
     - id: code-finder
-      name: '@omdsh-dev/dsh-code-finder'
+      name: '@havocrao/dsh-code-finder'
       config: { roots: ['/abs/path/to/plugin/src'] }
 ```
 
@@ -126,7 +128,7 @@ setupCodeFinder({
 
 | 入口 | 内容 |
 |---|---|
-| `@omdsh-dev/dsh-code-finder` | Node 侧：`createSourceIndex` + `handleSearchRequest` + **cordis host 插件**（`name`/`apply`/`inject` re-export） |
+| `@havocrao/dsh-code-finder` | Node 侧：`createSourceIndex` + `handleSearchRequest` + **cordis host 插件**（`name`/`apply`/`inject` re-export） |
 | `.../client` | **cordis 插件 client 半（harness-wire bundle）**：`window.__ModuleLoader__.load({id, factory})` 契约，宿主 `/plugins/.../client.js` 端点直接 serve |
 | `.../runtime` | 运行时 overlay（ESM）：`setupCodeFinder`（零框架依赖）——直接集成 / 自定义宿主用 |
 | `.../cordis` | cordis 插件 host 半独立入口（包根已 re-export，一般用不着） |

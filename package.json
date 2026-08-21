@@ -1,5 +1,5 @@
 {
-  "name": "@omdsh-dev/dsh-code-finder",
+  "name": "@havocrao/dsh-code-finder",
   "version": "0.1.0",
   "description": "Dev-only React component → source code locator: hold Opt+Shift to see which component rendered an element and jump to its source. Plug into any React app (vite/tsdown) or DSH plugin (cordis).",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/omdsh-dev/DSH-code-finder"
+    "url": "https://github.com/havocrao/DSH-code-finder"
   },
   "publishConfig": {
     "access": "public"

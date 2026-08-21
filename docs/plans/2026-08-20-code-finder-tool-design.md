@@ -32,7 +32,7 @@ code-inspector / react-code-finder）都有一块拼图但都不完整，且各�
   包装，挂载即用、零代码；
 - **仅 dev 构建生效**，生产零负担。
 
-命名：仓库 `dsh-code-finder`（omdsh-dev org），npm 包 `@omdsh-dev/dsh-code-finder`。
+命名：仓库 `dsh-code-finder`（havocrao org），npm 包 `@havocrao/dsh-code-finder`。
 核心 runtime 与构建插件是通用 React 工具，可独立用于任何 React 项目；cordis 包装与
 `/sidebar` 风格路由是 DSH 生态附加面。
 
@@ -86,7 +86,7 @@ hover 一个元素时，按优先级取「源码位置」：
 
 ```
 dsh-code-finder/
-├── package.json              # name: @omdsh-dev/dsh-code-finder
+├── package.json              # name: @havocrao/dsh-code-finder
 ├── tsdown.config.ts
 ├── src/
 │   ├── index.ts              # 主入口：Node 侧源码索引 + 搜索（可选）
@@ -211,7 +211,7 @@ export function apply(ctx) {
 }
 ```
 
-- **DSH 插件开发者接入**：`cordis.patch.yml` 挂 `@omdsh-dev/dsh-code-finder` 一行 + 配置
+- **DSH 插件开发者接入**：`cordis.patch.yml` 挂 `@havocrao/dsh-code-finder` 一行 + 配置
   `roots`（默认 `~/.dsh/source/current` + 当前插件仓库 src），即获得全 UI Opt+Shift 定位；
 - 与 better-sidebar 的集成（case）：不反向依赖——code-finder 只发 `onClick` 事件，be-sider
   侧把 `onClick` 接到 `ctx.betterSidebar.openFile(scope, path)`（打开侧边栏编辑器）或复制路径；
@@ -222,7 +222,7 @@ export function apply(ctx) {
 
 better-sidebar（本仓库）作为 case 的具体动作：
 
-1. devDependencies 加 `@omdsh-dev/dsh-code-finder`（workspace/link 开发期）；
+1. devDependencies 加 `@havocrao/dsh-code-finder`（workspace/link 开发期）；
 2. `tsdown.config.ts`：client bundle 的 `plugins` 数组加 `codeFinderTsdown()`（dev 构建注入
    `src/client/**`）；
 3. `src/client/index.tsx`：dev 构建时 `setupCodeFinder({ onClick: (hit) => hit.path
@@ -299,12 +299,12 @@ better-sidebar（本仓库）作为 case 的具体动作：
 
 9. **be-sider 接入用「NODE_ENV 守卫 + 动态 import」**：plan §9.3 只说 dev 时
    `setupCodeFinder`；为满足「生产零负担」硬约束，用 `if (process.env.NODE_ENV !==
-   'development') return` + `import('@omdsh-dev/dsh-code-finder/client')`，配合
+   'development') return` + `import('@havocrao/dsh-code-finder/client')`，配合
    be-sider 的 NODE_ENV define 常量折叠，生产构建整块 dead-code 消除（已验证：
    生产 bundle 0 个 `data-locatorjs` / 0 个 `setupCodeFinder`）。
 
 10. **be-sider 依赖用 workspace 链接**：`pnpm-workspace.yaml` 加
-    `- ../../DSH-code-finder` + `"@omdsh-dev/dsh-code-finder": "workspace:*"`
+    `- ../../DSH-code-finder` + `"@havocrao/dsh-code-finder": "workspace:*"`
     （dev 期；发布时换 registry 版本）。lockfile 因新增 workspace 成员而重排
     （只增/重定位，无既有版本回退）。
 

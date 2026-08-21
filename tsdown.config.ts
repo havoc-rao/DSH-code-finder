@@ -6,7 +6,7 @@
  *                               module-table wire format (window.__ModuleLoader__.load({id, factory}));
  *                               served by harness /plugins/<id>/client.js when the package declares dsh.client
  * - lib/runtime.js        (browser ESM) — setupCodeFinder runtime overlay (zero framework deps); direct
- *                               consumers import @omdsh-dev/dsh-code-finder/runtime
+ *                               consumers import @havocrao/dsh-code-finder/runtime
  * - lib/cordis.js         (node ESM)  — cordis plugin host half (explicit subpath; also re-exported at ".")
  * - lib/cordis-client.js  (browser ESM) — cordis plugin client half (explicit subpath; the harness-wire
  *                               copy lives at lib/client.js)
@@ -32,7 +32,7 @@ import type { UserConfig } from 'tsdown'
 
 export default [
   {
-    // CLI: npx @omdsh-dev/dsh-code-finder <init|status|remove>
+    // CLI: npx @havocrao/dsh-code-finder <init|status|remove>
     entry: { cli: 'src/cli/index.ts' },
     outDir: 'lib',
     format: ['esm'],
@@ -75,14 +75,14 @@ export default [
       // 固定 lib/client.js：harness /plugins/<id>/client.js 端点按包 exports
       // 的 "./client" 文件字节服务，cjs 默认 .cjs 扩展名会让端点 404。
       entryFileNames: 'client.js',
-      banner: 'window.__ModuleLoader__.load({ id: "@omdsh-dev/dsh-code-finder", factory: (require) => {',
+      banner: 'window.__ModuleLoader__.load({ id: "@havocrao/dsh-code-finder", factory: (require) => {',
       footer: 'return module.exports; } });',
       intro: 'var module = { exports: {} }; var exports = module.exports;',
     },
   },
   {
     // Direct ESM runtime (setupCodeFinder): 零框架依赖的 overlay，任意 bundler
-    // 直接 import @omdsh-dev/dsh-code-finder/runtime。
+    // 直接 import @havocrao/dsh-code-finder/runtime。
     entry: { runtime: 'src/client/index.ts' },
     outDir: 'lib',
     format: ['esm'],

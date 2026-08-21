@@ -3,10 +3,10 @@
 # This file is the `dsh.bundle.patch` layer of the published npm package: when
 # installed through the official CLI —
 #
-#   dsh plugin --profile <name> add @omdsh-dev/dsh-code-finder
+#   dsh plugin --profile <name> add @havocrao/dsh-code-finder
 #
 # — the command reconciles `dsh.profile.bundles` against installed packages
-# and, seeing this declaration, appends `@omdsh-dev/dsh-code-finder` to the
+# and, seeing this declaration, appends `@havocrao/dsh-code-finder` to the
 # bundle stack. The profile boot then merges THIS patch (a single `insert` of
 # the plugin row) exactly like the manual cordis.patch.yml mount line used
 # before. No profile file edits needed — one command installs and mounts.
@@ -14,7 +14,7 @@
 # The row is two-faced in one entry: the node face (this entry's package root)
 # registers the /code-finder/api/search route (host half); the browser face
 # comes from the same entry's `dsh.client` declaration — the host scans it and
-# serves the /plugins/@omdsh-dev/dsh-code-finder/client.js wire bundle, which
+# serves the /plugins/@havocrao/dsh-code-finder/client.js wire bundle, which
 # the cordis kernel imports as { name, inject, apply } (client half, the
 # Opt+Shift hover overlay).
 #
@@ -31,7 +31,7 @@
 #             - /absolute/path/to/plugin/UI/src
 #
 # Precision note: data-locatorjs build-time injection (bundler plugins
-# `@omdsh-dev/dsh-code-finder/tsdown` / `/vite`) still needs one line in the
+# `@havocrao/dsh-code-finder/tsdown` / `/vite`) still needs one line in the
 # UI project's build config — a CLI cannot edit another project's bundler —
 # but roots-override gives path-level resolution with zero build changes.
 #
@@ -39,10 +39,10 @@
 # manual row (or an aggregate bundle) would register /code-finder/api twice
 # and fail the plugin tree at boot ("duplicate prefix route"). The `!!js`
 # disabled expression backs THIS row off when another *enabled* entry already
-# mounts `@omdsh-dev/dsh-code-finder`; the manual/aggregate instance then owns
+# mounts `@havocrao/dsh-code-finder`; the manual/aggregate instance then owns
 # the locator. Surfaced before this row in entry-list order only, so the
 # manual row must precede the bundle row when both exist.
 - insert:
     - id: dsh-code-finder
-      name: '@omdsh-dev/dsh-code-finder'
-      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@omdsh-dev/dsh-code-finder' && e.options.id !== 'dsh-code-finder' && !e.disabled)"
+      name: '@havocrao/dsh-code-finder'
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@havocrao/dsh-code-finder' && e.options.id !== 'dsh-code-finder' && !e.disabled)"

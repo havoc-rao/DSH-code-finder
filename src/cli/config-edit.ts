@@ -6,15 +6,13 @@
  *
  * - vite.config.*   → `codeFinderVite()` in the plugins array
  * - tsdown.config.* → `codeFinderTsdown()` in every plugins array
- * - cordis.patch.yml → a one-row mount of `@omdsh-dev/dsh-code-finder`
+ * - cordis.patch.yml → a one-row mount of `@havocrao/dsh-code-finder`
  *
- * Every edit is idempotent (a marker identifier already present → no-op)
- * and snapshots the file to `<file>.code-finder.bak` on first edit; remove()
- * restores the snapshot verbatim when present, so hand-written edits are
- * never mangled.
+ * Every edit is idempotent (a marker identifier already present → no-op).
+ * No backup files are ever written: remove() strips exactly what init() added
+ * (import lines, plugins entries, the cordis row), leaving every other edit
+ * untouched — a stale snapshot would risk overwriting the user's own changes.
  */
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-
 /** Marker identifiers used for idempotence and targeted removal. */
 export const VITE_IDENTIFIER = 'codeFinderVite'
 export const TSDOWN_IDENTIFIER = 'codeFinderTsdown'
@@ -23,45 +21,8 @@ function detectEol(source: string): string {
   return source.includes('\r\n') ? '\r\n' : '\n'
 }
 
-function readUtf8(path: string): string | undefined {
-  try {
-    return readFileSync(path, 'utf8')
-  } catch {
-    return undefined
-  }
-}
-
-function backupPath(path: string): string {
-  return `${path}.code-finder.bak`
-}
-
-/** Snapshot the file if it has not been snapshotted yet. */
-function snapshot(path: string, source: string): void {
-  const backup = backupPath(path)
-  if (readUtf8(backup) === undefined) writeFileSync(backup, source, 'utf8')
-}
-
 /**
- * Restore the snapshot into place and remove the backup file. No-op when no
- * snapshot exists. The restored content is byte-identical to what the backup
- * held, so keeping the backup around would only leave `.restored` litter in
- * the project after every init → remove cycle.
- */
-export function restoreBackup(path: string): boolean {
-  const backup = backupPath(path)
-  const snapshotSource = readUtf8(backup)
-  if (snapshotSource === undefined) return false
-  writeFileSync(path, snapshotSource, 'utf8')
-  try {
-    unlinkSync(backup)
-  } catch {
-    /* best effort: a leftover backup file is harmless */
-  }
-  return true
-}
-
-/**
- * Insert `import { ... } from '@omdsh-dev/dsh-code-finder/...'` after the
+ * Insert `import { ... } from '@havocrao/dsh-code-finder/...'` after the
  * last top-level import statement. Idempotent on the import statement text.
  */
 export function ensureImport(source: string, importStatement: string): string {
@@ -172,7 +133,7 @@ export function removePluginsEntry(source: string, identifier: string): string {
 }
 
 /**
- * Insert a one-row mount of `@omdsh-dev/dsh-code-finder` into the first
+ * Insert a one-row mount of `@havocrao/dsh-code-finder` into the first
  * top-level `- insert:` block of a cordis.patch.yml.
  *
  * Idempotence is by PACKAGE NAME, not by row id: any existing row whose

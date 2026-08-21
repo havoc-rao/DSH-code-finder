@@ -24,21 +24,22 @@ React 组件 → overlay 显示组件名 + `文件:行`；**点击**打开源码
 发布后无需手动编辑任何文件，`npx` 直接接线、诊断、回滚：
 
 ```bash
-npx @omdsh-dev/dsh-code-finder init      # 自动装依赖 + 接线（vite/tsdown/cordis 自动检测）
-npx @omdsh-dev/dsh-code-finder status    # 诊断：接线状态 + 依赖 + 产物 data-locatorjs 注入抽查
-npx @omdsh-dev/dsh-code-finder remove    # 回滚（自动备份原样还原）
-# 可选: --cwd <dir>  --no-install  --no-backup  --quiet
+npx @havocrao/dsh-code-finder init      # 自动装依赖 + 接线（vite/tsdown/cordis 自动检测）
+npx @havocrao/dsh-code-finder status    # 诊断：接线状态 + 依赖 + 产物 data-locatorjs 注入抽查
+npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + 移除依赖
+# 可选: --cwd <dir>  --no-install  --keep-deps  --link <path>  --quiet
 ```
 
-- **自动备份**：每次编辑先把原文件存为 `<file>.code-finder.bak`（首个编辑创建），
-  `remove` 优先原样还原备份——手写改动不被破坏（无备份时才精确逆向删除）；
+- **零备份**：不写任何 `.code-finder.bak` 文件（无残留副作用）；`remove` 走
+  精确逆向删除，只移除 CLI 自己加的 import 行 / plugins 条目 / cordis 行，
+  接线后你的手动修改原样保留——不存在"过期备份还原冲掉修改"的风险；
 - **幂等**：重复 `init` 无副作用；接线检测/删除都按完整调用表达式（不会被
   import 行字样误判）；
 - **覆盖三种接线**：`vite.config.*`（plugins 数组插 `codeFinderVite()`）、
   `tsdown.config.*`（每个 plugins 数组插 `codeFinderTsdown()`）、
   `cordis.patch.yml`（一行双面插件，缩进随块对齐）；
 - 接线后仍需 **dev 语义构建**（见「构建期注入生效机制」）才产生注入；
-- `remove` 不卸载依赖（保险）；手动 `pnpm remove @omdsh-dev/dsh-code-finder`。
+- `remove` 连带卸载依赖（`--keep-deps` 保留）；手动 `pnpm remove @havocrao/dsh-code-finder`。
 
 ## A. vite 项目
 
@@ -46,7 +47,7 @@ npx @omdsh-dev/dsh-code-finder remove    # 回滚（自动备份原样还原）
 // vite.config.ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { codeFinderVite } from '@omdsh-dev/dsh-code-finder/vite'
+import { codeFinderVite } from '@havocrao/dsh-code-finder/vite'
 
 export default defineConfig({
   plugins: [react(), codeFinderVite()], // 只加这一行；dev-only，生产构建是 no-op
@@ -56,7 +57,7 @@ export default defineConfig({
 ```ts
 // 应用入口（仅 dev 生效，生产 tree-shake 掉）
 if (import.meta.env.DEV) {
-  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/runtime')
+  const { setupCodeFinder } = await import('@havocrao/dsh-code-finder/runtime')
   setupCodeFinder({})
 }
 ```
@@ -69,7 +70,7 @@ if (import.meta.env.DEV) {
 
 ```ts
 // tsdown.config.ts —— client bundle 的 plugins 数组里加：
-import { codeFinderTsdown } from '@omdsh-dev/dsh-code-finder/tsdown'
+import { codeFinderTsdown } from '@havocrao/dsh-code-finder/tsdown'
 // ...
 plugins: [codeFinderTsdown()],   // dev-only 注入 src/client/**（node_modules 自动跳过）
 ```
@@ -77,7 +78,7 @@ plugins: [codeFinderTsdown()],   // dev-only 注入 src/client/**（node_modules
 ```ts
 // 插件 client 入口（src/client/index.tsx，仅 dev 构建生效）
 if (process.env.NODE_ENV !== 'production') {
-  const { setupCodeFinder } = await import('@omdsh-dev/dsh-code-finder/runtime')
+  const { setupCodeFinder } = await import('@havocrao/dsh-code-finder/runtime')
   setupCodeFinder({ onClick: (hit) => { /* 打开/复制 hit.path */ } })
 }
 ```
@@ -94,7 +95,7 @@ DSH 插件的 `cordis.patch.yml` **挂一行**即可——同一 entry 双面：
 ```yaml
 - insert:
     - id: code-finder
-      name: '@omdsh-dev/dsh-code-finder'        # 一行双面：host 半 + client 半
+      name: '@havocrao/dsh-code-finder'        # 一行双面：host 半 + client 半
       config: { roots: ['/abs/path/to/plugin/src', '~/.dsh/source/current'] }
 ```
 
@@ -118,7 +119,7 @@ DSH 插件的 `cordis.patch.yml` **挂一行**即可——同一 entry 双面：
 的）：
 
 ```ts
-import { setupCodeFinder } from '@omdsh-dev/dsh-code-finder/runtime'
+import { setupCodeFinder } from '@havocrao/dsh-code-finder/runtime'
 
 setupCodeFinder({
   hotkeys: 'alt+shift',              // 'alt+shift' | 'alt' | 'cmd+shift' | null（null 关闭）

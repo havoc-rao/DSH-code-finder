@@ -17,11 +17,11 @@ import {
   removeCordisRow,
   removeImport,
   removePluginsEntry,
-  restoreBackup,
 } from '../src/cli/config-edit'
 import { runCli } from '../src/cli/index'
 
 const VITE_SAMPLE = [
+  "import { defineConfig } from 'vite'",
   "import { defineConfig } from 'vite'",
   "import react from '@vitejs/plugin-react'",
   '',
@@ -43,7 +43,7 @@ afterEach(() => {
 })
 
 describe('config-edit: ensureImport / removeImport', () => {
-  const specifier = "'@omdsh-dev/dsh-code-finder/vite'"
+  const specifier = "'@havocrao/dsh-code-finder/vite'"
 
   it('inserts after the last import', () => {
     const out = ensureImport(VITE_SAMPLE, `import { codeFinderVite } from ${specifier}`)
@@ -112,7 +112,7 @@ describe('config-edit: ensurePluginsEntry / removePluginsEntry', () => {
 })
 
 describe('config-edit: ensureCordisRow / removeCordisRow', () => {
-  const row = "- id: dsh-code-finder\nname: '@omdsh-dev/dsh-code-finder'"
+  const row = "- id: dsh-code-finder\nname: '@havocrao/dsh-code-finder'"
   const sample = [
     '# profile patch',
     '- insert:',
@@ -124,7 +124,7 @@ describe('config-edit: ensureCordisRow / removeCordisRow', () => {
   it('aligns child indentation to the insert block', () => {
     const { source, changed } = ensureCordisRow(sample, row, 'dsh-code-finder')
     expect(changed).toBe(true)
-    expect(source).toContain("- id: dsh-code-finder\n      name: '@omdsh-dev/dsh-code-finder'")
+    expect(source).toContain("- id: dsh-code-finder\n      name: '@havocrao/dsh-code-finder'")
     expect(source).toMatch(/^    - id: dsh-code-finder$/m) // row starts at the block's child indent (4 spaces)
   })
 
@@ -135,7 +135,7 @@ describe('config-edit: ensureCordisRow / removeCordisRow', () => {
     // An existing row under a DIFFERENT id referencing the same package also
     // blocks the insert (duplicate /code-finder/api registration otherwise).
     const foreignId = sample.replace('ui-theme', 'whatever')
-      .replace("'@deepseek-ai/dsh-client-ui-theme'", "'@omdsh-dev/dsh-code-finder'")
+      .replace("'@deepseek-ai/dsh-client-ui-theme'", "'@havocrao/dsh-code-finder'")
     const blocked = ensureCordisRow(foreignId, row, 'dsh-code-finder')
     expect(blocked.changed).toBe(false)
   })
@@ -149,37 +149,16 @@ describe('config-edit: ensureCordisRow / removeCordisRow', () => {
 
   it('removes a row under a foreign id too', () => {
     const foreign = sample.replace('ui-theme', 'cf-extra')
-      .replace("'@deepseek-ai/dsh-client-ui-theme'", "'@omdsh-dev/dsh-code-finder'")
+      .replace("'@deepseek-ai/dsh-client-ui-theme'", "'@havocrao/dsh-code-finder'")
     const out = removeCordisRow(foreign, row)
     expect(out).not.toContain('cf-extra')
-    expect(out).not.toContain("'@omdsh-dev/dsh-code-finder'")
+    expect(out).not.toContain("'@havocrao/dsh-code-finder'")
     expect(out).toContain('- insert:')
   })
 })
 
-describe('restoreBackup', () => {
-  it('restores the snapshot verbatim and removes the backup', () => {
-    const dir = sandbox()
-    const path = join(dir, 'vite.config.ts')
-    writeFileSync(path, 'original\ncontent\n')
-    writeFileSync(`${path}.code-finder.bak`, 'original\ncontent\n')
-    writeFileSync(path, 'tampered\n')
-    expect(restoreBackup(path)).toBe(true)
-    expect(readFileSync(path, 'utf8')).toBe('original\ncontent\n')
-    // Backup is consumed (deleted), leaving no .restored litter.
-    expect(() => readFileSync(`${path}.code-finder.bak`, 'utf8')).toThrow()
-  })
-
-  it('is a no-op when no snapshot exists', () => {
-    const dir = sandbox()
-    const path = join(dir, 'f.ts')
-    writeFileSync(path, 'x')
-    expect(restoreBackup(path)).toBe(false)
-  })
-})
-
 describe('runCli: end-to-end wiring', () => {
-  it('init wires a vite project and remove restores it via backup', async () => {
+  it('init wires a vite project; remove removes only its own injections', async () => {
     const dir = sandbox()
     writeFileSync(join(dir, 'vite.config.ts'), VITE_SAMPLE)
     writeFileSync(join(dir, 'package.json'), '{}\n')
@@ -187,9 +166,8 @@ describe('runCli: end-to-end wiring', () => {
     const initCode = await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
     expect(initCode).toBe(0)
     const wired = readFileSync(join(dir, 'vite.config.ts'), 'utf8')
-    expect(wired).toContain("import { codeFinderVite } from '@omdsh-dev/dsh-code-finder/vite'")
+    expect(wired).toContain("import { codeFinderVite } from '@havocrao/dsh-code-finder/vite'")
     expect(wired).toContain('plugins: [codeFinderVite(), react()]')
-    expect(readFileSync(`${join(dir, 'vite.config.ts')}.code-finder.bak`, 'utf8')).toBe(VITE_SAMPLE)
 
     // idempotent second init
     await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
@@ -200,9 +178,31 @@ describe('runCli: end-to-end wiring', () => {
     const removeCode = await runCli(['remove', '--cwd', dir, '--quiet'])
     expect(removeCode).toBe(0)
     expect(readFileSync(join(dir, 'vite.config.ts'), 'utf8')).toBe(VITE_SAMPLE)
+    // No backup file is ever created or left behind.
+    expect(() => readFileSync(`${join(dir, 'vite.config.ts')}.code-finder.bak`, 'utf8')).toThrow()
   })
 
-  it('init wires every tsdown plugins array; remove exact-deletes without backup', async () => {
+  it('remove preserves user edits made after init (no stale backup to restore)', async () => {
+    const dir = sandbox()
+    writeFileSync(join(dir, 'vite.config.ts'), VITE_SAMPLE)
+    writeFileSync(join(dir, 'package.json'), '{}\n')
+    await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
+
+    // User edits the file after wiring: adds a plugin and a comment.
+    const edited = readFileSync(join(dir, 'vite.config.ts'), 'utf8')
+      .replace('plugins: [codeFinderVite(), react()]', 'plugins: [codeFinderVite(), react(), userPlugin()]')
+      .replace('import react from', '// my later edit\nimport react from')
+    writeFileSync(join(dir, 'vite.config.ts'), edited)
+
+    await runCli(['remove', '--cwd', dir, '--no-install', '--quiet'])
+    const clean = readFileSync(join(dir, 'vite.config.ts'), 'utf8')
+    // User's additions survive; only the CLI injection is gone.
+    expect(clean).toContain('userPlugin()')
+    expect(clean).toContain('// my later edit')
+    expect(clean).not.toContain('codeFinderVite')
+  })
+
+  it('init wires every tsdown plugins array; remove exact-deletes', async () => {
     const dir = sandbox()
     const tsdown = [
       "import { defineConfig, type UserConfig } from 'tsdown'",
@@ -222,11 +222,9 @@ describe('runCli: end-to-end wiring', () => {
     await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
     const wired = readFileSync(join(dir, 'tsdown.config.ts'), 'utf8')
     expect(wired.match(/codeFinderTsdown\(\)/gu)).toHaveLength(2)
-    expect(wired).toContain("import { codeFinderTsdown } from '@omdsh-dev/dsh-code-finder/tsdown'")
+    expect(wired).toContain("import { codeFinderTsdown } from '@havocrao/dsh-code-finder/tsdown'")
 
-    // remove without backup: exact surgical deletion
-    rmSync(`${join(dir, 'tsdown.config.ts')}.code-finder.bak`, { force: true })
-    await runCli(['remove', '--cwd', dir, '--no-backup', '--quiet'])
+    await runCli(['remove', '--cwd', dir, '--quiet'])
     const clean = readFileSync(join(dir, 'tsdown.config.ts'), 'utf8')
     expect(clean).not.toContain('codeFinderTsdown')
     expect(clean).toContain('plugins: [a()]')
@@ -251,7 +249,7 @@ describe('runCli: end-to-end wiring', () => {
     await runCli(['init', '--cwd', dir, '--no-install', '--quiet'])
     const wired = readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')
     expect(wired).toContain('- id: dsh-code-finder')
-    expect(wired).toContain("name: '@omdsh-dev/dsh-code-finder'")
+    expect(wired).toContain("name: '@havocrao/dsh-code-finder'")
     expect(wired).toContain('ctx.loader.entries()') // 双挂防护 disabled 表达式随行
 
     await runCli(['remove', '--cwd', dir, '--quiet'])
@@ -293,7 +291,7 @@ describe('runCli: end-to-end wiring', () => {
   it('init on a project whose tsdown config already carries the call is a no-op', async () => {
     const dir = sandbox()
     const already = [
-      "import { codeFinderTsdown } from '@omdsh-dev/dsh-code-finder/tsdown'",
+      "import { codeFinderTsdown } from '@havocrao/dsh-code-finder/tsdown'",
       '',
       'export default { plugins: [codeFinderTsdown()] }',
       '',

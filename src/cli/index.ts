@@ -1,16 +1,17 @@
 /**
  * dsh-code-finder CLI — wire the component-locator into a target project.
  *
- *   npx @omdsh-dev/dsh-code-finder init      detect project type → install
+ *   npx @havocrao/dsh-code-finder init      detect project type → install
  *                                            dependency (unless --no-install)
  *                                            → wire build plugins / cordis row
- *   npx @omdsh-dev/dsh-code-finder status    report current wiring + probe
+ *   npx @havocrao/dsh-code-finder status    report current wiring + probe
  *                                            built artifacts for injection
- *   npx @omdsh-dev/dsh-code-finder remove    roll back all edits (backup
- *                                            restore, unless --no-backup)
+ *   npx @havocrao/dsh-code-finder remove    exact self-removal of the injected
+ *                                            lines (never overwrites user edits)
  *
- * Zero runtime deps; argv parsing is hand-rolled. Every file edit is
- * idempotent and snapshotted to `<file>.code-finder.bak`.
+ * Zero runtime deps; argv parsing is hand-rolled. Edits are idempotent; no
+ * backup files are ever written (the audit snapshot was dropped as more
+ * noise than value — remove() only strips what init() added).
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
@@ -22,12 +23,11 @@ import {
   removeCordisRow,
   removeImport,
   removePluginsEntry,
-  restoreBackup,
   TSDOWN_IDENTIFIER,
   VITE_IDENTIFIER,
 } from './config-edit'
 
-const PACKAGE = '@omdsh-dev/dsh-code-finder'
+const PACKAGE = '@havocrao/dsh-code-finder'
 const VITE_IMPORT = `import { codeFinderVite } from '${PACKAGE}/vite'`
 const TSDOWN_IMPORT = `import { codeFinderTsdown } from '${PACKAGE}/tsdown'`
 // Row id 与包内官方 patch（cordis.patch.yml）一致；幂等/删除按 name（任何 id 的
@@ -35,16 +35,16 @@ const TSDOWN_IMPORT = `import { codeFinderTsdown } from '${PACKAGE}/tsdown'`
 // 包内 patch 同款：宿主树里已有启用态的 dsh-code-finder 行时本行自动退避。
 const CORDIS_ROW = [
   "- id: dsh-code-finder",
-  "name: '@omdsh-dev/dsh-code-finder'",
-  'disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === \'@omdsh-dev/dsh-code-finder\' && e.options.id !== \'dsh-code-finder\' && !e.disabled)"',
+  "name: '@havocrao/dsh-code-finder'",
+  'disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === \'@havocrao/dsh-code-finder\' && e.options.id !== \'dsh-code-finder\' && !e.disabled)"',
 ].join('\n')
 
 interface Options {
   readonly root: string
   readonly install: boolean
-  readonly backup: boolean
   readonly quiet: boolean
   readonly link: string | undefined
+  readonly keepDeps: boolean
 }
 
 function log(options: Options, message: string): void {
@@ -94,7 +94,7 @@ function installDependency(options: Options, root: string): boolean {
     if (message.includes('ERR_PNPM_FETCH_404') || message.includes('not in the npm registry') || message.includes(' 404 ')) {
       // 未发布 registry：再试 yarn/npm 只会触发 corepack 下载交互卡死——
       // 如实指引，让用户用 --link（发布前）或发布后重跑。
-      log(options, '⚠ 依赖未安装：@omdsh-dev/dsh-code-finder 尚未发布到 npm registry。')
+      log(options, '⚠ 依赖未安装：@havocrao/dsh-code-finder 尚未发布到 npm registry。')
       log(options, '  发布前请加 --link 指向本地仓库（或先手动 link 安装，再 init --no-install）：')
       log(options, `    dcf init --cwd . --link <DSH-code-finder 仓库路径>`)
       return false
@@ -112,31 +112,23 @@ function installDependency(options: Options, root: string): boolean {
   }
 }
 
-function snapshotFile(path: string, source: string, options: Options): void {
-  if (!options.backup) return
-  const backup = `${path}.code-finder.bak`
-  if (!existsSync(backup)) writeFileSync(backup, source, 'utf8')
-}
-
 function basenameDisplay(path: string): string {
   return path.split(/[/\\]/u).pop() ?? path
 }
 
-function wireViteFile(options: Options, path: string): string {
+function wireViteFile(path: string): string {
   let source = readSource(path) ?? ''
   if (source.includes(`${VITE_IDENTIFIER}()`)) return `  ${basenameDisplay(path)}: 已接入（无改动）`
-  snapshotFile(path, source, options)
   source = ensureImport(source, VITE_IMPORT)
   const result = ensurePluginsEntry(source, VITE_IDENTIFIER, `${VITE_IDENTIFIER}()`)
   source = result.source
   writeSource(path, source)
-  return `+ ${basenameDisplay(path)}: plugins 数组加入 codeFinderVite() 与 import（已备份）`
+  return `+ ${basenameDisplay(path)}: plugins 数组加入 codeFinderVite() 与 import`
 }
 
-function wireTsdownFile(options: Options, path: string): string {
+function wireTsdownFile(path: string): string {
   let source = readSource(path) ?? ''
   if (source.includes(TSDOWN_IDENTIFIER)) return `  ${basenameDisplay(path)}: 已接入（无改动）`
-  snapshotFile(path, source, options)
   source = ensureImport(source, TSDOWN_IMPORT)
   const result = ensurePluginsEntry(source, TSDOWN_IDENTIFIER, `${TSDOWN_IDENTIFIER}()`)
   if (!result.changed) {
@@ -148,17 +140,16 @@ function wireTsdownFile(options: Options, path: string): string {
     return `  ${basenameDisplay(path)}: 未发现字面 plugins: [ 数组（条件式插件列表无法安全注入，未改动）`
   }
   writeSource(path, result.source)
-  return `+ ${basenameDisplay(path)}: 所有 plugins 数组加入 codeFinderTsdown() 与 import（已备份）`
+  return `+ ${basenameDisplay(path)}: 所有 plugins 数组加入 codeFinderTsdown() 与 import`
 }
 
-function wireCordisFile(options: Options, path: string): string {
+function wireCordisFile(path: string): string {
   let source = readSource(path) ?? ''
-  if (source.includes("'@omdsh-dev/dsh-code-finder'")) return `  ${basenameDisplay(path)}: 已接入（无改动）`
-  snapshotFile(path, source, options)
+  if (source.includes("'@havocrao/dsh-code-finder'")) return `  ${basenameDisplay(path)}: 已接入（无改动）`
   const result = ensureCordisRow(source, CORDIS_ROW, 'dsh-code-finder')
   source = result.source
   writeSource(path, source)
-  return `+ ${basenameDisplay(path)}: 挂载一行 code-finder（双面插件）（已备份）`
+  return `+ ${basenameDisplay(path)}: 挂载一行 code-finder（双面插件）`
 }
 
 function countInjection(source: string): number {
@@ -205,9 +196,9 @@ function cmdInit(options: Options): number {
     log(options, '  （若项目用其他 bundler，请手动加 codeFinderVite() / codeFinderTsdown()）')
     return 1
   }
-  for (const path of files.vite) log(options, wireViteFile(options, path))
-  for (const path of files.tsdown) log(options, wireTsdownFile(options, path))
-  for (const path of files.cordis) log(options, wireCordisFile(options, path))
+  for (const path of files.vite) log(options, wireViteFile(path))
+  for (const path of files.tsdown) log(options, wireTsdownFile(path))
+  for (const path of files.cordis) log(options, wireCordisFile(path))
   log(options, '')
   log(options, '✔ 接线完成。构建请用 dev 语义（NODE_ENV=development；vite dev 亦可），')
   log(options, '  生产构建不带 data-locatorjs 注入。取消接入：npx dsh-code-finder remove')
@@ -228,7 +219,7 @@ function cmdStatus(options: Options): number {
     wired = wired || isWired
     log(options, `  ${isWired ? '✔' : '✗'} ${basenameDisplay(path)} ${isWired ? '已接线' : '未接线'}`)
   }
-  if (allPaths.length > 0 && !wired) log(options, '  → 运行 `npx @omdsh-dev/dsh-code-finder init` 接线')
+  if (allPaths.length > 0 && !wired) log(options, '  → 运行 `npx @havocrao/dsh-code-finder init` 接线')
   const packageJson = readSource(join(options.root, 'package.json'))
   const depInstalled = packageJson?.includes(PACKAGE) === true
   log(options, `  ${depInstalled ? '✔' : '✗'} 依赖 ${PACKAGE} ${depInstalled ? '已安装' : '未安装'}`)
@@ -240,13 +231,9 @@ function cmdStatus(options: Options): number {
 function cmdRemove(options: Options): number {
   log(options, `dsh-code-finder remove @ ${options.root}`)
   const files = probeConfigFiles(options.root)
+  // 只精确移除 CLI 自己加的东西（import 行 / plugins 条目 / cordis 行），
+  // 用户对文件的所有其它修改原样保留；不写、不读、不还原任何备份文件。
   for (const path of [...files.vite, ...files.tsdown]) {
-    const backup = `${path}.code-finder.bak`
-    if (options.backup && existsSync(backup)) {
-      restoreBackup(path)
-      log(options, `- ${basenameDisplay(path)}: 从备份还原（原样恢复）`)
-      continue
-    }
     const before = readSource(path) ?? ''
     let source = before
     source = removeImport(source, VITE_IMPORT)
@@ -255,30 +242,49 @@ function cmdRemove(options: Options): number {
     source = removePluginsEntry(source, TSDOWN_IDENTIFIER)
     if (source !== before) {
       writeSource(path, source)
-      log(options, `- ${basenameDisplay(path)}: 已移除注入代码`)
+      log(options, `- ${basenameDisplay(path)}: 已移除注入（保留你的其它修改）`)
     } else {
       log(options, `  ${basenameDisplay(path)}: 未发现注入（无改动）`)
     }
   }
   for (const path of files.cordis) {
-    const backup = `${path}.code-finder.bak`
-    if (options.backup && existsSync(backup)) {
-      restoreBackup(path)
-      log(options, `- ${basenameDisplay(path)}: 从备份还原（原样恢复）`)
-      continue
-    }
     const before = readSource(path) ?? ''
     const next = removeCordisRow(before, CORDIS_ROW)
     if (next !== before) {
       writeSource(path, next)
-      log(options, `- ${basenameDisplay(path)}: 已移除 code-finder 行`)
+      log(options, `- ${basenameDisplay(path)}: 已移除 code-finder 行（保留你的其它修改）`)
     } else {
       log(options, `  ${basenameDisplay(path)}: 未发现 code-finder 行（无改动）`)
     }
   }
-  log(options, '  依赖未自动卸载（保险）；需移除时执行：')
-  log(options, `    pnpm remove ${PACKAGE}  # 或对应包管理器`)
+  uninstallDependency(options, options.root)
   return 0
+}
+
+/**
+ * Remove the dependency too: `remove` is a full uninstall, not just a wiring
+ * rollback. Skips silently when the package is not installed in this project
+ * (the exact install detection used by {@link installDependency}).
+ * @param options - CLI options (`keepDeps` opts out).
+ */
+function uninstallDependency(options: Options, root: string): void {
+  if (options.keepDeps) return
+  const packageJson = readSource(join(root, 'package.json'))
+  const declared = packageJson?.includes(`"${PACKAGE}"`) === true
+  const linked = existsSync(join(root, 'node_modules', PACKAGE, 'package.json'))
+  if (!declared && !linked) return
+  const manager = existsSync(join(root, 'yarn.lock')) ? 'yarn'
+    : existsSync(join(root, 'package-lock.json')) ? 'npm' : 'pnpm'
+  try {
+    execFileSync(manager, manager === 'npm' ? ['uninstall', PACKAGE] : ['remove', PACKAGE], {
+      cwd: root,
+      stdio: options.quiet ? 'ignore' : 'inherit',
+    })
+    log(options, `- 依赖 ${PACKAGE} 已移除`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    log(options, `⚠ 依赖移除失败（${message.slice(0, 80)}）；可手动：${manager} remove ${PACKAGE}`)
+  }
 }
 
 function resolveRoot(explicit: string | undefined): string {
@@ -291,9 +297,9 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
   let command: string | undefined
   let root = resolve(process.cwd())
   let install = true
-  let backup = true
   let quiet = false
   let link: string | undefined
+  let keepDeps = false
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === undefined) continue
@@ -301,9 +307,9 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
       case 'init': case 'status': case 'remove':
         command = arg
         break
-      case '--help': case '-h': printHelp(); return { command: '__help__', options: { root, install, backup, quiet, link } }
+      case '--help': case '-h': printHelp(); return { command: '__help__', options: { root, install, quiet, link, keepDeps } }
       case '--no-install': install = false; break
-      case '--no-backup': backup = false; break
+      case '--keep-deps': keepDeps = true; break
       case '--quiet': quiet = true; break
       case '--link': {
         const value = args[index + 1]
@@ -323,7 +329,7 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
         throw new CliUsageError(`未知参数: ${arg}`)
     }
   }
-  return { command, options: { root, install, backup, quiet, link } }
+  return { command, options: { root, install, quiet, link, keepDeps } }
 }
 
 /** Argument parsing failure: exits 2 at the process boundary, code-2 within runCli. */
@@ -331,7 +337,7 @@ class CliUsageError extends Error {}
 
 /** usage line shared by parse errors and missing subcommand. */
 function usage(): string {
-  return 'usage: dcf (dsh-code-finder) <init|status|remove> [--cwd <dir>] [--no-install] [--no-backup] [--quiet]'
+  return 'usage: dcf (dsh-code-finder) <init|status|remove> [--cwd <dir>] [--no-install] [--keep-deps] [--link <path>] [--quiet]'
 }
 
 /** --help / -h output. */
@@ -341,15 +347,15 @@ function printHelp(): void {
   console.log(usage())
   console.log('')
   console.log('子命令:')
-  console.log('  init     检测项目类型并接线（vite/tsdown/cordis），自动备份')
+  console.log('  init     检测项目类型并接线（vite/tsdown/cordis），不产生任何备份文件')
   console.log('  status   诊断接线状态、依赖、产物 data-locatorjs 注入')
-  console.log('  remove   回滚接线（优先从备份原样还原）')
+  console.log('  remove   完整卸载：精确移除注入（保留你的其它修改）+ 移除依赖（--keep-deps 保留）')
   console.log('')
   console.log('选项:')
   console.log('  --cwd <dir>          目标项目根目录（默认当前目录）')
   console.log('  --link <path>        以 link: 协议安装依赖（包未发布 registry 时指向本地仓库）')
   console.log('  --no-install         跳过依赖安装（只改配置）')
-  console.log('  --no-backup          不写 .code-finder.bak 备份')
+  console.log('  --keep-deps          卸载时保留依赖（只回滚接线）')
   console.log('  --quiet              静默输出')
   console.log('  -h, --help           显示本帮助')
   console.log('')

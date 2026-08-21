@@ -11,14 +11,14 @@
  *   信任 fence 拒绝越权。
  *
  * 同时 re-export cordis host 半插件（name/inject/apply）：外部工程的 cordis
- * patch 行 `name: '@omdsh-dev/dsh-code-finder'` 即同时挂上 host 半（本入口）
+ * patch 行 `name: '@havocrao/dsh-code-finder'` 即同时挂上 host 半（本入口）
  * 与 client 半（`dsh.client` 声明 → 浏览器 /plugins 端点），双面合一。
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 
 // cordis 插件 host 半（同名双面 entry 的 node 面）：外部工程挂载
-// `@omdsh-dev/dsh-code-finder` 一行即得 host 半路由 + client 半 overlay。
+// `@havocrao/dsh-code-finder` 一行即得 host 半路由 + client 半 overlay。
 // default 必须一并 re-export——cordis-loader 只认 `default` 或函数本身，
 // 仅命名导出 namespace（还混着 createSourceIndex 等库导出）会被判为
 // invalid plugin，host 半静默不挂载 → /code-finder/api/search 注册不上 →

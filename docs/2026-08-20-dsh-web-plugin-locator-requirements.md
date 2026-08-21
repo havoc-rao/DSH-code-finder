@@ -95,6 +95,6 @@ DSH web（`dsh web`，生产 React 构建）上装载了 be-sider 等插件。�
 
 ## 7. 交付形态
 
-- 独立项目：`/Users/havoc420/Documents/Projects/tools/DSH-code-finder`（npm `@omdsh-dev/dsh-code-finder`）；
+- 独立项目：`/Users/havoc420/Documents/Projects/tools/DSH-code-finder`（npm `@havocrao/dsh-code-finder`）；
 - 多入口：`./client`（runtime）/ `./tsdown` / `./vite`（构建插件）/ `./cordis`（DSH 生态包装）/ `.`（host 搜索）；
 - be-sider 为第一个接入 case（workspace link 已在 `pnpm-workspace.yaml` 配置）。
