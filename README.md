@@ -26,6 +26,21 @@ hover 一个元素时按优先级取源码位置：
 > 注意：生产 React 构建没有 `_debugSource`，宿主 UI 的精确行号在**不修改宿主构建**
 > 的前提下不可达——这是预期行为（名字级 + 搜索级）。
 
+## 一键接入（npx CLI）
+
+发布后可用 `npx` 免安装自动接线 / 诊断 / 回滚：
+
+```bash
+npx @omdsh-dev/dsh-code-finder init      # 自动装依赖(pnpm/yarn/npm) + 接线 vite/tsdown/cordis
+npx @omdsh-dev/dsh-code-finder status    # 诊断接线状态 + 产物注入抽查
+npx @omdsh-dev/dsh-code-finder remove    # 回滚（自动备份还原，原样恢复）
+# 可选: --cwd <dir>  --no-install  --no-backup  --quiet
+```
+
+- 每次编辑自动备份 `<file>.code-finder.bak`，`remove` 优先原样还原备份（手写改动不被破坏）
+- 幂等：重复 init 无副作用；支持 vite.config.* / tsdown.config.* / cordis.patch.yml
+- 接线后仍需 **dev 语义构建**（`NODE_ENV=development` 或 vite dev）才产生注入，见 docs/README「构建期注入生效机制」
+
 ## 快速开始
 
 ### vite 项目

@@ -19,6 +19,27 @@ React 组件 → overlay 显示组件名 + `文件:行`；**点击**打开源码
 
 ---
 
+## 0. npx CLI 一键接入 / 诊断 / 回滚
+
+发布后无需手动编辑任何文件，`npx` 直接接线、诊断、回滚：
+
+```bash
+npx @omdsh-dev/dsh-code-finder init      # 自动装依赖 + 接线（vite/tsdown/cordis 自动检测）
+npx @omdsh-dev/dsh-code-finder status    # 诊断：接线状态 + 依赖 + 产物 data-locatorjs 注入抽查
+npx @omdsh-dev/dsh-code-finder remove    # 回滚（自动备份原样还原）
+# 可选: --cwd <dir>  --no-install  --no-backup  --quiet
+```
+
+- **自动备份**：每次编辑先把原文件存为 `<file>.code-finder.bak`（首个编辑创建），
+  `remove` 优先原样还原备份——手写改动不被破坏（无备份时才精确逆向删除）；
+- **幂等**：重复 `init` 无副作用；接线检测/删除都按完整调用表达式（不会被
+  import 行字样误判）；
+- **覆盖三种接线**：`vite.config.*`（plugins 数组插 `codeFinderVite()`）、
+  `tsdown.config.*`（每个 plugins 数组插 `codeFinderTsdown()`）、
+  `cordis.patch.yml`（一行双面插件，缩进随块对齐）；
+- 接线后仍需 **dev 语义构建**（见「构建期注入生效机制」）才产生注入；
+- `remove` 不卸载依赖（保险）；手动 `pnpm remove @omdsh-dev/dsh-code-finder`。
+
 ## A. vite 项目
 
 ```ts

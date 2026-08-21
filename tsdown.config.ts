@@ -32,6 +32,17 @@ import type { UserConfig } from 'tsdown'
 
 export default [
   {
+    // CLI: npx @omdsh-dev/dsh-code-finder <init|status|remove>
+    entry: { cli: 'src/cli/index.ts' },
+    outDir: 'lib',
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2022',
+    fixedExtension: false,
+    dts: false,
+    clean: false,
+  },
+  {
     entry: { index: 'src/index.ts' },
     outDir: 'lib',
     format: ['esm'],

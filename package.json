@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Dev-only React component → source code locator: hold Opt+Shift to see which component rendered an element and jump to its source. Plug into any React app (vite/tsdown) or DSH plugin (cordis).",
   "type": "module",
+  "bin": {
+    "dsh-code-finder": "bin/code-finder.js",
+    "dcf": "bin/code-finder.js"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/omdsh-dev/DSH-code-finder"
@@ -60,7 +64,10 @@
     "lib/cordis-client.js",
     "lib/tsdown.js",
     "lib/vite.js",
+    "lib/cli.js",
     "lib/types/**/*.d.ts",
+    "bin",
+    "cordis.patch.yml",
     "src",
     "README.md",
     "LICENSE"
