@@ -28,7 +28,30 @@
  * this row in) ship nothing to execute; the old ESM runtime kept the same
  * semantics via the same catch.
  */
+import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import type { UserConfig } from 'tsdown'
+
+// ── 构建期版本戳（对标 shr 的 ldflags 注入） ──────────────────────────────
+// Version 纯净（package.json）、Channel 构建期决定（CHANNEL 环境变量，默认
+// dev——本地构建）；buildTime 与 commit 供 `dcf -v` 展示。release 构建：
+// `CHANNEL=release npm run build`（VERSION 不带 -dev.HHMM 后缀）。
+// 仅在 CLI 产物上 define（其他产物不经 cli/version.ts，无注入面）。
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+const channel = process.env.CHANNEL ?? 'dev'
+const now = new Date()
+const pad = (n: number): string => String(n).padStart(2, '0')
+const buildTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`
+let commit = 'unknown'
+try {
+  commit = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim() || commit
+} catch { /* 非 git 检出，保留 unknown */ }
+const CLI_DEFINES = {
+  __DCF_VERSION__: JSON.stringify(pkg.version),
+  __DCF_CHANNEL__: JSON.stringify(channel),
+  __DCF_BUILD_TIME__: JSON.stringify(buildTime),
+  __DCF_COMMIT__: JSON.stringify(commit),
+} as const
 
 export default [
   {
@@ -41,6 +64,7 @@ export default [
     fixedExtension: false,
     dts: false,
     clean: false,
+    define: CLI_DEFINES,
   },
   {
     entry: { index: 'src/index.ts' },

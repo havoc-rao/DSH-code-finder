@@ -27,6 +27,7 @@ import {
   TSDOWN_IDENTIFIER,
   VITE_IDENTIFIER,
 } from './config-edit'
+import { cliVersion } from './version'
 
 const PACKAGE = '@havocrao/dsh-code-finder'
 const VITE_IMPORT = `import { codeFinderVite } from '${PACKAGE}/vite'`
@@ -436,6 +437,7 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
         command = arg
         break
       case '--help': case '-h': printHelp(); return { command: '__help__', options: { root, install, quiet, link, keepDeps } }
+      case '--version': case '-v': console.log(cliVersion()); return { command: '__version__', options: { root, install, quiet, link, keepDeps } }
       case '--no-install': install = false; break
       case '--keep-deps': keepDeps = true; break
       case '--quiet': quiet = true; break
@@ -485,6 +487,7 @@ function printHelp(): void {
   console.log('  --no-install         跳过依赖安装（只改配置）')
   console.log('  --keep-deps          卸载时保留依赖（只回滚接线）')
   console.log('  --quiet              静默输出')
+  console.log('  -v, --version        显示版本（渠道标注 + 构建信息）')
   console.log('  -h, --help           显示本帮助')
   console.log('')
   console.log('接线后需以 dev 语义构建（NODE_ENV=development）才产生 data-locatorjs 注入。')
@@ -509,6 +512,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   }
   switch (command) {
     case '__help__': return 0
+    case '__version__': return 0
     case 'init': return cmdInit(options)
     case 'status': return cmdStatus(options)
     case 'remove': return cmdRemove(options)

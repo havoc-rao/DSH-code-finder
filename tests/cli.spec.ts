@@ -339,6 +339,11 @@ describe('runCli: end-to-end wiring', () => {
     expect(await runCli(['frobnicate'])).toBe(2)
   })
 
+  it('prints the version stamp for -v / --version (exit 0)', async () => {
+    expect(await runCli(['-v'])).toBe(0)
+    expect(await runCli(['--version'])).toBe(0)
+  })
+
   it('handles a project with no wiring targets gracefully (exit 1)', async () => {
     const dir = sandbox()
     writeFileSync(join(dir, 'package.json'), '{}\n')
