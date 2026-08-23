@@ -8,3 +8,7 @@ playwright-report/
 # 本地 mise/asdf 插件（仅本机使用，不入库；参照 docs/mise 方案）
 /scripts/mise/
 coverage/
+docs/plans
+
+# 个人开发记录（仅本机保留，不入库；开源仓库不展示）
+docs/private/

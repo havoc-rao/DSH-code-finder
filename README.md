@@ -10,7 +10,12 @@ Dev-only **React 组件 → 源码定位**工具：按住 **Opt+Shift**（`Alt+S
 - **DSH 插件生态**：cordis 包装，挂载即用、零代码（还提供源码搜索路由兜底宿主 UI）。
 
 完整接入指南见 **[docs/README.md](./docs/README.md)**（vite / tsdown / cordis 纯
-runtime 三档）。设计文档见 [docs/plans/2026-08-20-code-finder-tool-design.md](./docs/plans/2026-08-20-code-finder-tool-design.md)。
+runtime 三档）。
+
+> **DSH 生态 demo ref**：Harness 宿主整仓接入（profile 层 + L2 overlay + L3 client
+> bundles）与插件包注入（better-sidebar 型）的完整 CLI 实操，见
+> `docs/private/dsh-injection-guide.md`（含个人环境路径的开发记录，**仅本地
+> 保留、不入库**；发布仓库不含该目录）。
 
 ## 三层定位
 
