@@ -1,7 +1,10 @@
 node_modules/
 lib/
-coverage/
 *.tgz
 .DS_Store
 test-results/
 playwright-report/
+
+# 本地 mise/asdf 插件（仅本机使用，不入库；参照 docs/mise 方案）
+/scripts/mise/
+coverage/
