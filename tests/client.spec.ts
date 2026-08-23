@@ -47,6 +47,9 @@ function boxVisible(): boolean {
 const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
 
 beforeEach(() => {
+  // runtime 严格 dev 语义：只有 NODE_ENV=development 才启用（vitest 默认是 test）
+  vi.stubEnv('NODE_ENV', 'development')
+  vi.stubEnv('CODE_FINDER', '')
   document.body.innerHTML = ''
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -56,6 +59,8 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -98,6 +103,24 @@ describe('setupCodeFinder', () => {
     // 松开热键 → 隐藏
     window.dispatchEvent(new KeyboardEvent('keyup', { altKey: false, shiftKey: true }))
     expect(boxVisible()).toBe(false)
+    handle.destroy()
+  })
+
+  it('MODE 通道不再兜底判生产（wire bundle 的 import.meta 被替换为 {} 的回归）', () => {
+    // DSH wire bundle 是 CJS 产物，rolldown 把 import.meta 替换成 {}，MODE 恒为
+    // undefined——若 runtime 用「MODE !== development 即生产」兜底，宿主里会
+    // 静默吞掉 overlay（曾实测：strict 化后 DSH 宿主蓝框消失）。process 通道
+    // 判定后必须直接返回，MODE 不得参与。
+    vi.stubEnv('MODE', 'production')
+    const handle = setupCodeFinder({})
+    const el = document.createElement('div')
+    el.setAttribute('data-locatorjs', '/abs/src/A.tsx:1:1')
+    mockRect(el)
+    document.body.appendChild(el)
+
+    pressKeys({ alt: true, shift: true })
+    hover(el)
+    expect(boxVisible()).toBe(true)
     handle.destroy()
   })
 

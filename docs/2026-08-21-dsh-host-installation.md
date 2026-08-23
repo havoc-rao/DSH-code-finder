@@ -43,12 +43,12 @@ dcf init --cwd packages/bundle/web-app --link ~/Documents/Projects/tools/DSH-cod
 dcf init --cwd packages/client --link ~/Documents/Projects/tools/DSH-code-finder
 # ④ profile 层：mount 行引用的包从 profile node_modules 解析——registry 未发布
 #    时用 dsh plugin add 的 link: 协议装进 profile（否则 boot 抛 ERR_MODULE_NOT_FOUND）
-dsh plugin --profile web add link:/Users/havoc420/Documents/Projects/tools/DSH-code-finder
+dsh plugin --profile web add link:/Users/havoc/Documents/Projects/tools/DSH-code-finder
 # ⑤ dev 语义构建（注入落进 client bundles）+ 启动。
 #    dev-web.ts 是常驻 watch、无 --once，且自身不设 NODE_ENV——必须显式
 #    development，否则 codeFinderEnabled 判定不注入。终端 A 构建、终端 B 起服务：
 NODE_ENV=development pnpm run dev:web    # 终端 A（首次运行前需先有一次 pnpm run build，见 §5）
-pnpm dsh web                             # 终端 B
+NODE_ENV=development pnpm dsh web        # 终端 B：overlay 挂载判定与构建侧对称——非 development 不挂载
 ```
 
 > harness 的 `apps/web` 不需要也**不要**再 `dcf init`——它无 .tsx 组件源码，
@@ -61,7 +61,7 @@ pnpm dsh web                             # 终端 B
 
 ```bash
 # 在 harness 仓库根下：
-dcf init --cwd packages/bundle/web-app --link /Users/havoc420/Documents/Projects/tools/DSH-code-finder
+dcf init --cwd packages/bundle/web-app --link ~/Documents/Projects/tools/DSH-code-finder
 ```
 
 效果：`packages/bundle/web-app/cordis.patch.yml` 的 insert 块首行挂双面插件：
@@ -92,7 +92,7 @@ dcf init --cwd packages/bundle/web-app --link /Users/havoc420/Documents/Projects
 
 ```bash
 # 一键：workspace 子目录安装（--workspace-root 自动重试）+ import + clientConfig 精准注入
-dcf init --cwd packages/client --link /Users/havoc420/Documents/Projects/tools/DSH-code-finder
+dcf init --cwd packages/client --link ~/Documents/Projects/tools/DSH-code-finder
 # 幂等：重复执行「已接入（无改动）」；回滚：dcf remove --cwd packages/client
 ```
 
@@ -103,13 +103,14 @@ dcf init --cwd packages/client --link /Users/havoc420/Documents/Projects/tools/D
 ## 5. 构建姿势
 
 **统一用 NODE_ENV 控制构建**：`NODE_ENV === 'development'` 才注入
-（`src/build/transform.ts` 的 `codeFinderEnabled`）。`CODE_FINDER` 只是**运行时
-逃生门**（见 §5.1），不是日常构建开关。
+（`src/build/transform.ts` 的 `codeFinderEnabled`）。`CODE_FINDER` 是**构建与
+运行时共用的强制逃生门**（`1/on/true` 强制开、`0/off/false` 强制关，见 §5.1），
+不是日常开关。
 
 | 场景 | 命令 | 注入 |
 |---|---|---|
-| dev watch 循环（推荐开发/验证） | `NODE_ENV=development pnpm run dev:web`（另开终端 `pnpm dsh web`） | ✓（**src 直编**，client bundles 注入） |
-| serve（只 serve 不构建） | `pnpm dsh web` | 无关（读已烘焙属性） |
+| dev watch 循环（推荐开发/验证） | `NODE_ENV=development pnpm run dev:web`（另开终端 `NODE_ENV=development pnpm dsh web`） | ✓（**src 直编**，client bundles 注入） |
+| serve（只 serve 不构建） | `NODE_ENV=development pnpm dsh web`（非 dev serve：overlay 完全不存在） | 无关（读已烘焙属性） |
 | 全量生产构建 | `pnpm run build` | ✗ 0 处（发布正确行为） |
 | 只重编前端 shell | `pnpm run build:web` | ✗（vite 默认 production） |
 
@@ -130,26 +131,30 @@ dcf init --cwd packages/client --link /Users/havoc420/Documents/Projects/tools/D
 覆盖回无注入版本——dev 中途手滑跑过，hover 退回「只有组件名」，重跑
 `NODE_ENV=development pnpm run dev:web` 恢复。
 
-### 5.1 运行时统一 NODE_ENV（生产部署零 hover）
+### 5.1 运行时统一 NODE_ENV（非 dev 完全不存在）
 
-**构建期与运行时都统一跟随 NODE_ENV**。运行时 overlay 的挂载由 mount 行
-的 `disabled` 决定——`!!js` 在 **node 端 loader** 原生求值（读真实
-`process.env.NODE_ENV`），单行静态表达式无递归：
+**构建期与运行时判定完全对称**（都镜像 `codeFinderEnabled` 的语义）：只有
+明确的 dev 环境才挂载——`NODE_ENV === 'development'`（或 `CODE_FINDER=1/on/true`
+强制开、且未被 `0/off/false` 强制关）；**未设 NODE_ENV 与 production 一样
+不挂载**（构建无注入时运行时也零存在，杜绝空壳 overlay）。mount 行的
+`disabled` 由 `!!js` 在 **node 端 loader** 原生求值（读真实 `process.env`），
+单行静态表达式无递归：
 
 ```yaml
 - id: dsh-code-finder-mount
   name: '@havocrao/dsh-code-finder'
-  disabled: !!js process.env.NODE_ENV === 'production'
+  disabled: !!js "(process.env.NODE_ENV !== 'development' || ['0','off','false'].includes(process.env.CODE_FINDER)) && !['1','on','true'].includes(process.env.CODE_FINDER)"
 ```
 
 ```bash
-pnpm dsh web                       # dev：注入 + overlay 挂载（hover 有信息）
-NODE_ENV=production pnpm dsh web   # 生产：overlay 不挂载（零 hover）
+NODE_ENV=development pnpm dsh web   # dev：注入 + overlay 挂载（hover 有信息）
+pnpm dsh web                        # 未设 NODE_ENV：overlay 完全不挂（空壳不存在）
+NODE_ENV=production pnpm dsh web    # 生产：overlay 不挂载（零 hover）
 ```
 
-生产时 entry 不 apply（host 半不注册路由、client 半不挂载），浏览器
-wire bundle 无需任何 process/define 判定。`CODE_FINDER` 仅保留为**构建期
-逃生门**（`codeFinderEnabled` 认 `CODE_FINDER=1` 强制注入）；浏览器原生
+非 dev 时 entry 不 apply（host 半不注册路由、client 半不挂载），浏览器
+wire bundle 无需任何 process/define 判定。`CODE_FINDER` 是**构建与运行时
+共用的逃生门**（构建侧强制注入 ⇄ 运行时强制挂载，两侧同语义）；浏览器原生
 `<html data-code-finder="off">` 仍是即时逃生门。
 
 ## 6. 验证
@@ -159,7 +164,7 @@ dcf status --cwd packages/bundle/web-app     # cordis.patch.yml 已接线 + 依�
 # dev 重建后抽查产物（L3 生效的硬证据）：
 grep -rl data-locatorjs packages/client/*/lib/client.js | head   # client UI 注入
 grep -c data-locatorjs packages/client/ui-conversation/lib/client.js   # 实测 402
-# 浏览器：pnpm dsh web → Opt+Shift 悬停组件 → 蓝框 + `<组件名> path:line:col`
+# 浏览器：NODE_ENV=development pnpm dsh web → Opt+Shift 悬停组件 → 蓝框 + `<组件名> path:line:col`
 ```
 
 ## 7. 卸载

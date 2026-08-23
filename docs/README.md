@@ -76,8 +76,9 @@ plugins: [codeFinderTsdown()],   // dev-only 注入 src/client/**（node_modules
 ```
 
 ```ts
-// 插件 client 入口（src/client/index.tsx，仅 dev 构建生效）
-if (process.env.NODE_ENV !== 'production') {
+// 插件 client 入口（src/client/index.tsx，仅 dev 语义生效：
+// NODE_ENV=development；未设 NODE_ENV 一律不挂载）
+if (process.env.NODE_ENV === 'development') {
   const { setupCodeFinder } = await import('@havocrao/dsh-code-finder/runtime')
   setupCodeFinder({ onClick: (hit) => { /* 打开/复制 hit.path */ } })
 }

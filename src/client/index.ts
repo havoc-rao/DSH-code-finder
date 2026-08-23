@@ -52,17 +52,27 @@ const SEARCH_CACHE_TTL_MS = 30_000
 
 let active: { destroy(): void } | null = null
 
-/** 是否为生产运行环境（打包器 define / vite MODE 双通道判定）。 */
+/**
+ * 是否为生产运行环境。判定规则：**显式环境用 process.env 决定，未知环境
+ * 默认启用**（与 cordis client 半 isDevBuild 的 catch 语义一致）——
+ *
+ * - process 存在（打包器 define 后为字面量；node/jsdom 为真实值）：
+ *   `NODE_ENV === 'development'` 才运行（对称于 codeFinderEnabled）；
+ * - 浏览器无 process 且未被 define（DSH wire bundle 原样 serve 的场景）：
+ *   抛错后**默认启用**。这不是宽松漏洞：wire bundle 能被浏览器加载并执行
+ *   apply，本身已由 node 端 cordis mount 行（disabled 按 NODE_ENV 求值）
+ *   把过关——非 dev 时 entry 根本不 apply。
+ *
+ * 不要用 import.meta.env.MODE 兜底：wire bundle 是 CJS 产物，rolldown 把
+ * `import.meta` 替换成 `{}`，MODE 恒为 undefined——若按"非 development 即
+ * 生产"兜底，会在无 MODE 的宿主里误判生产、静默吞掉 overlay（曾实测：
+ * strict 化后 DSH 宿主蓝框消失）。vite/webpack 宿主会 define
+ * process.env.NODE_ENV，第一通道即可判定，不需要 MODE。
+ */
 function isProductionRuntime(): boolean {
   try {
-    // 打包器 define 直接替换为字面量；浏览器无 process 时抛错走 catch。
-    if (process.env.NODE_ENV === 'production') return true
-  } catch {
-    // 纯浏览器 ESM：无 process，继续看 import.meta.env
-  }
-  try {
-    const mode = (import.meta as unknown as { env?: { MODE?: string } }).env?.MODE
-    return mode === 'production'
+    // 打包器 define 直接替换为字面量；浏览器无 process 抛 ReferenceError 走 catch → 启用。
+    return process.env.NODE_ENV !== 'development'
   } catch {
     return false
   }

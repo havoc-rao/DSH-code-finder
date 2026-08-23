@@ -192,6 +192,13 @@ describe('client 半：dev 自动 setupCodeFinder', () => {
     expect(setupMock).not.toHaveBeenCalled()
   })
 
+  it('未设 NODE_ENV（非 dev 语义）不启用——空壳 overlay 不存在', () => {
+    vi.stubEnv('NODE_ENV', '')
+    vi.stubEnv('CODE_FINDER', '')
+    applyClient({ effect: () => undefined })
+    expect(setupMock).not.toHaveBeenCalled()
+  })
+
   it('逃生门 data-code-finder="off" 完全关闭', () => {
     vi.stubEnv('NODE_ENV', 'development')
     document.documentElement.dataset.codeFinder = 'off'

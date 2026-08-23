@@ -36,21 +36,21 @@ const TSDOWN_IMPORT = `import { codeFinderTsdown } from '${PACKAGE}/tsdown'`
 // `dsh-code-finder`。包声明 `dsh.bundle.patch`，被 bundle 栈 reconcile 时官方
 // patch 会随包自动应用——若本行也用同一 id，loader 在 include 阶段直接抛
 // "duplicate loader entry id"（disabled 是运行期评估，救不了 load 期重复 id）。
-// 本行（`dsh-code-finder-mount`）**不带 disabled 表达式**，永远启用并占据挂载：
-// 官方行的表达式（同名异 id 行启用时退避）会读本行的 disabled——它是静态
-// false，不会触发递归求值；若本行也写 disabled 且引用官方行 disabled，两行
-// 互相读对方的 disabled 会无限递归（Maximum call stack size exceeded）。
+// 官方行的表达式（同名异 id 行启用时退避）会读本行的 disabled——所以本行
+// 的 disabled 必须只读 process.env 的静态表达式，不可引用其他行的 disabled，
+// 否则两行互相读对方会无限递归（Maximum call stack size exceeded）。
 // 幂等/删除按 name（任何 id 的已有同类挂载都会被识别，避免 /code-finder/api 双注册）。
-// NODE_ENV 统一控制（构建期 codeFinderEnabled 已跟随 NODE_ENV，这里管运行时
-// overlay 的挂载）：`!!js` 在 node 端 loader 求值，读真实 process.env——
-// dev（NODE_ENV 未设/development）→ disabled=false 挂载；生产部署
-// `NODE_ENV=production pnpm dsh web` → disabled=true，entry 不 apply（host 半
-// 与 client 半都不挂载）。单行静态 disabled（只读 env、不读其他行的 disabled）
-// 不会递归。CODE_FINDER 仍是构建期逃生门（codeFinderEnabled），运行时不再需要。
+// disabled 与构建期 codeFinderEnabled（src/build/transform.ts）**完全对称**：
+// `!!js` 在 node 端 loader 求值，读真实 process.env——只有明确的 dev 语义才
+// 挂载：`NODE_ENV === 'development'`（或 CODE_FINDER=1/on/true 强制开、且未被
+// CODE_FINDER=0/off/false 强制关）。未设 NODE_ENV（undefined）与 production
+// 一样视为非 dev → disabled=true，entry 不 apply（host 半与 client 半都不
+// 挂载）——空壳 overlay 完全不存在，与"构建期无注入"一致。单行静态 disabled
+// （只读 env、不读其他行的 disabled）不会递归。
 const CORDIS_ROW = [
   "- id: dsh-code-finder-mount",
   "name: '@havocrao/dsh-code-finder'",
-  "disabled: !!js process.env.NODE_ENV === 'production'",
+  'disabled: !!js "(process.env.NODE_ENV !== \'development\' || [\'0\',\'off\',\'false\'].includes(process.env.CODE_FINDER)) && ![\'1\',\'on\',\'true\'].includes(process.env.CODE_FINDER)"',
 ].join('\n')
 
 interface Options {

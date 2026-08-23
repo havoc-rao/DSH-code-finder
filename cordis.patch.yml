@@ -35,14 +35,22 @@
 # UI project's build config — a CLI cannot edit another project's bundler —
 # but roots-override gives path-level resolution with zero build changes.
 #
+# Strict dev semantics first: same predicate as build-time codeFinderEnabled.
+# Only an explicit dev env mounts — `NODE_ENV === 'development'` (unless
+# CODE_FINDER=1/on/true forces on, or 0/off/false forces off). Unset NODE_ENV
+# (undefined) is NOT dev: this row is disabled, and because the dcf-generated
+# mount row (`dsh-code-finder-mount`) shares the predicate, NO entry mounts —
+# no overlay, no /code-finder/api route. A "build with no injection + runtime
+# overlay shell" combination is impossible.
+#
 # Double-mount guard: a profile that already mounts this package under its own
 # manual row (or an aggregate bundle) would register /code-finder/api twice
 # and fail the plugin tree at boot ("duplicate prefix route"). The `!!js`
-# disabled expression backs THIS row off when another *enabled* entry already
-# mounts `@havocrao/dsh-code-finder`; the manual/aggregate instance then owns
-# the locator. Surfaced before this row in entry-list order only, so the
-# manual row must precede the bundle row when both exist.
+# disabled expression ALSO backs THIS row off when another *enabled* entry
+# already mounts `@havocrao/dsh-code-finder`; the manual/aggregate instance
+# then owns the locator. Surfaced before this row in entry-list order only, so
+# the manual row must precede the bundle row when both exist.
 - insert:
     - id: dsh-code-finder
       name: '@havocrao/dsh-code-finder'
-      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@havocrao/dsh-code-finder' && e.options.id !== 'dsh-code-finder' && !e.disabled)"
+      disabled: !!js "(process.env.NODE_ENV !== 'development' || ['0','off','false'].includes(process.env.CODE_FINDER)) && !['1','on','true'].includes(process.env.CODE_FINDER) || [...ctx.loader.entries()].some((e) => e.options.name === '@havocrao/dsh-code-finder' && e.options.id !== 'dsh-code-finder' && !e.disabled)"
