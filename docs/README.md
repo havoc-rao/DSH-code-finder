@@ -113,7 +113,11 @@ DSH 插件的 `cordis.patch.yml` **挂一行**即可——同一 entry 双面：
   `<html data-code-finder="off">` 可完全关闭；
 - 想给插件自己的组件加**元素级行号**：再在自己的构建里加 B 档的
   `codeFinderTsdown()`（需 `NODE_ENV=development`，见「构建期注入生效机制」）
-  ——不加也不影响名字级/搜索级。
+  ——不加也不影响名字级/搜索级；
+- **零构建插件**（手写 classic script、无 bundler、无 JSX，如 `dsh-remote` 的
+  `lib/client.js`）：B 档不可达，改用独立注入入口 `dcf instrument lib --write`
+  （或 `@havocrao/dsh-code-finder/instrument` 的 `instrumentDir()`）——对
+  `React.createElement` / jsx-runtime 调用等价注入，语义与构建期完全一致。
 
 ## 纯 runtime（不装构建插件）
 

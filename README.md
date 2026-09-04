@@ -114,6 +114,33 @@ import { codeFinderTsdown } from '@havocrao/dsh-code-finder/tsdown'
       config: { roots: ['/abs/path/to/plugin/src'] }
 ```
 
+### 零构建插件（无 bundler：独立 instrument 入口）
+
+手写 classic script 插件（如 `dsh-remote` 的 `lib/client.js`，宿主直接 serve、
+**没有 vite/tsdown 构建、没有任何 JSX**）挂不上 `.../tsdown` / `.../vite`——
+对它执行独立注入即可，与构建期注入完全同款语义：
+
+```bash
+# 零构建插件自己的 dev 脚本 / sync 脚本里一行调用：
+# NODE_ENV=development dcf instrument lib --write
+#   → lib/client.js 变成注入版（data-locatorjs 属性 + __LOCATOR_DATA__ 注册表）
+# 生产构建（不设 NODE_ENV）不注入；重复执行幂等；node_modules 与解析失败文件自动跳过。
+```
+
+或程序化调用：
+
+```ts
+import { instrumentDir, instrumentFile } from '@havocrao/dsh-code-finder/instrument'
+
+await instrumentDir('lib', { write: true, projectRoot: process.cwd() })
+// await instrumentFile('lib/client.js', { write: true, outDir: '.dcf' })  // 镜像输出
+```
+
+注入覆盖 `React.createElement(...)` 与 jsx-runtime（`jsx`/`jsxs`/`jsxDEV`/`_jsx*`）
+调用（含 classic script 常见形态：全局 `React`、`var React = window.React`、
+`var h = React.createElement`），格式与 JSX 模式完全一致：`data-locatorjs="<abs>:<line>:<col>"`
+（或 `id` 格式 + `expressionsCE` 注册表条目，客户端已合并读取）。
+
 ## 触发与动作
 
 ```ts
@@ -140,6 +167,7 @@ setupCodeFinder({
 | `.../cordis/client` | cordis 插件 client 半独立入口（ESM；wire bundle 在 `.../client`） |
 | `.../tsdown` | tsdown/rolldown 构建期注入插件（`codeFinderTsdown`） |
 | `.../vite` | vite 构建期注入插件（`codeFinderVite`） |
+| `.../instrument` | 无 bundler 独立注入（`instrumentFile` / `instrumentDir`）；CLI `dcf instrument <dir...> [--write] [--out <dir>]` |
 
 > 根 `package.json` 带 `dsh.client` 声明（`{ inject: [], platform: 'web' }`）：cordis 宿主
 > （如 deepseek-harness web-app）在 patch 挂载本包时自动发现浏览器半并注入 bootstrap

@@ -12,6 +12,7 @@
  *                               copy lives at lib/client.js)
  * - lib/tsdown.js         (node ESM)  — tsdown/rolldown transform plugin (wraps @locator/babel-jsx)
  * - lib/vite.js           (node ESM)  — vite transform plugin (same transform core)
+ * - lib/instrument.js     (node ESM)  — bundler-less standalone injection (instrumentFile / instrumentDir)
  *
  * Types ship from lib/types (tsc -p tsconfig.build.json). The browser runtime
  * entry is plain ESM with no framework imports — the overlay talks to React
@@ -150,6 +151,16 @@ export default [
   },
   {
     entry: { vite: 'src/build/vite.ts' },
+    outDir: 'lib',
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2022',
+    fixedExtension: false,
+    dts: false,
+    clean: false,
+  },
+  {
+    entry: { instrument: 'src/instrument.ts' },
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',

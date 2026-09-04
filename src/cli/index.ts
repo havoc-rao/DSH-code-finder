@@ -8,6 +8,9 @@
  *                                            built artifacts for injection
  *   npx @havocrao/dsh-code-finder remove    exact self-removal of the injected
  *                                            lines (never overwrites user edits)
+ *   npx @havocrao/dsh-code-finder instrument <dir...> [--write] [--out <dir>]
+ *                                            standalone injection for bundler-
+ *                                            less projects (no build to hook)
  *
  * Zero runtime deps; argv parsing is hand-rolled. Edits are idempotent; no
  * backup files are ever written (the audit snapshot was dropped as more
@@ -15,7 +18,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
   ensureClientConfigEntry,
   ensureCordisRow,
@@ -28,6 +31,7 @@ import {
   VITE_IDENTIFIER,
 } from './config-edit'
 import { cliVersion } from './version'
+import { instrumentDir } from '../instrument'
 
 const PACKAGE = '@havocrao/dsh-code-finder'
 const VITE_IMPORT = `import { codeFinderVite } from '${PACKAGE}/vite'`
@@ -59,6 +63,12 @@ interface Options {
   readonly quiet: boolean
   readonly link: string | undefined
   readonly keepDeps: boolean
+  /** instrument 的目标目录（位置参数，按 --cwd root 解析）。 */
+  readonly dirs: string[]
+  /** instrument 时落盘（默认 dry-run 只报告）。 */
+  readonly write: boolean
+  /** instrument 镜像输出目录（保留相对路径，不覆盖源文件）。 */
+  readonly outDir: string | undefined
 }
 
 function log(options: Options, message: string): void {
@@ -416,6 +426,56 @@ function uninstallDependency(options: Options, root: string): void {
   }
 }
 
+/**
+ * `dcf instrument <dir...> [--write] [--out <out>]`：无 bundler 项目的独立
+ * 注入。默认 dry-run（只报告）；--write 落盘（或镜像到 --out）。生产语义
+ * （非 dev、无 CODE_FINDER 强制）整体 no-op。transform 异常逐文件 warn +
+ * 跳过，不中断。
+ */
+async function cmdInstrument(options: Options): Promise<number> {
+  if (options.dirs.length === 0) {
+    console.error('dsh-code-finder: instrument 需要一个或多个目录（如：dcf instrument lib --write）')
+    console.error(usage())
+    return 2
+  }
+  const root = options.root
+  let changed = 0
+  let errors = 0
+  let total = 0
+  let disabled = false
+  for (const dir of options.dirs) {
+    const absDir = isAbsolute(dir) ? dir : join(root, dir)
+    const result = await instrumentDir(absDir, { projectRoot: root, write: options.write, outDir: options.outDir })
+    disabled = disabled || result.disabled
+    changed += result.changed
+    errors += result.errors
+    total += result.files.length
+    if (!options.quiet) {
+      if (result.disabled) {
+        log(options, `- ${displayPath(absDir, root)}: 非 dev 语义（NODE_ENV 非 development），未注入`)
+      } else {
+        log(options, `- ${displayPath(absDir, root)}: ${result.changed} 注入 / ${result.unchanged} 未变 / ${result.errors} 错误`
+          + (result.write ? '（已写入）' : '（dry-run）'))
+        for (const file of result.files) {
+          if (file.changed && file.error === undefined) log(options, `    ${displayPath(file.file, root)}`)
+        }
+      }
+    }
+  }
+  if (disabled) {
+    log(options, '未注入：当前非 dev 语义。以 NODE_ENV=development（或 CODE_FINDER=1）运行才会注入。')
+  } else {
+    log(options, `instrument 完成：${changed}/${total} 个文件注入（${options.write ? '已写入' : 'dry-run，加 --write 落盘'}），${errors} 个错误`)
+  }
+  return errors === 0 ? 0 : 1
+}
+
+/** 项目内路径省略展示（root 之外显示绝对路径）。 */
+function displayPath(absPath: string, root: string): string {
+  const rel = relative(root, absPath)
+  return rel === '' || rel.startsWith('..') ? absPath : rel
+}
+
 function resolveRoot(explicit: string | undefined): string {
   if (explicit === undefined) return resolve(process.cwd())
   if (isAbsolute(explicit)) return explicit
@@ -429,18 +489,30 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
   let quiet = false
   let link: string | undefined
   let keepDeps = false
+  const dirs: string[] = []
+  let write = false
+  let outDir: string | undefined
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === undefined) continue
     switch (arg) {
-      case 'init': case 'status': case 'remove':
+      case 'init': case 'status': case 'remove': case 'instrument':
         command = arg
         break
-      case '--help': case '-h': printHelp(); return { command: '__help__', options: { root, install, quiet, link, keepDeps } }
-      case '--version': case '-v': console.log(cliVersion()); return { command: '__version__', options: { root, install, quiet, link, keepDeps } }
+      case '--help': case '-h': printHelp(); return { command: '__help__', options: { root, install, quiet, link, keepDeps, dirs, write, outDir } }
+      case '--version': case '-v': console.log(cliVersion()); return { command: '__version__', options: { root, install, quiet, link, keepDeps, dirs, write, outDir } }
       case '--no-install': install = false; break
       case '--keep-deps': keepDeps = true; break
       case '--quiet': quiet = true; break
+      case '--write': write = true; break
+      case '--out': {
+        // 相对路径先按字面保存，解析完 --cwd 后再以 root 为基准解析。
+        const value = args[index + 1]
+        if (value === undefined) throw new CliUsageError('--out 需要一个值（镜像输出目录）')
+        outDir = value
+        index += 1
+        break
+      }
       case '--link': {
         const value = args[index + 1]
         if (value === undefined) throw new CliUsageError('--link 需要一个值（本地 DSH-code-finder 仓库路径）')
@@ -456,10 +528,17 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
         break
       }
       default:
+        // instrument 的位置参数：目标目录（其余子命令不接受位置参数）。
+        if (!arg.startsWith('-') && command === 'instrument') {
+          dirs.push(arg)
+          break
+        }
         throw new CliUsageError(`未知参数: ${arg}`)
     }
   }
-  return { command, options: { root, install, quiet, link, keepDeps } }
+  // --out 相对路径以最终 root（--cwd）为基准。
+  outDir = outDir === undefined ? undefined : isAbsolute(outDir) ? resolve(outDir) : join(root, outDir)
+  return { command, options: { root, install, quiet, link, keepDeps, dirs, write, outDir } }
 }
 
 /** Argument parsing failure: exits 2 at the process boundary, code-2 within runCli. */
@@ -467,7 +546,7 @@ class CliUsageError extends Error {}
 
 /** usage line shared by parse errors and missing subcommand. */
 function usage(): string {
-  return 'usage: dcf (dsh-code-finder) <init|status|remove> [--cwd <dir>] [--no-install] [--keep-deps] [--link <path>] [--quiet]'
+  return 'usage: dcf (dsh-code-finder) <init|status|remove|instrument [dir...] [--write] [--out <dir>]> [--cwd <dir>] [--no-install] [--keep-deps] [--link <path>] [--quiet]'
 }
 
 /** --help / -h output. */
@@ -477,20 +556,25 @@ function printHelp(): void {
   console.log(usage())
   console.log('')
   console.log('子命令:')
-  console.log('  init     检测项目类型并接线（vite/tsdown/cordis），不产生任何备份文件')
-  console.log('  status   诊断接线状态、依赖、产物 data-locatorjs 注入')
-  console.log('  remove   完整卸载：精确移除注入（保留你的其它修改）+ 移除依赖（--keep-deps 保留）')
+  console.log('  init        检测项目类型并接线（vite/tsdown/cordis），不产生任何备份文件')
+  console.log('  status      诊断接线状态、依赖、产物 data-locatorjs 注入')
+  console.log('  remove      完整卸载：精确移除注入（保留你的其它修改）+ 移除依赖（--keep-deps 保留）')
+  console.log('  instrument  无 bundler 项目的独立注入：对目录内源码执行 codeFinder 注入')
+  console.log('              （默认 dev 语义才注入、dry-run 只报告；--write 落盘 / --out 镜像）')
   console.log('')
   console.log('选项:')
   console.log('  --cwd <dir>          目标项目根目录（默认当前目录）')
   console.log('  --link <path>        以 link: 协议安装依赖（包未发布 registry 时指向本地仓库）')
   console.log('  --no-install         跳过依赖安装（只改配置）')
   console.log('  --keep-deps          卸载时保留依赖（只回滚接线）')
+  console.log('  --write              instrument 时写入产物（默认 dry-run 只报告）')
+  console.log('  --out <dir>          instrument 镜像输出到 <dir>（保留相对路径，不覆盖源文件）')
   console.log('  --quiet              静默输出')
   console.log('  -v, --version        显示版本（渠道标注 + 构建信息）')
   console.log('  -h, --help           显示本帮助')
   console.log('')
-  console.log('接线后需以 dev 语义构建（NODE_ENV=development）才产生 data-locatorjs 注入。')
+  console.log('接线后需以 dev 语义构建（NODE_ENV=development）才产生 data-locatorjs 注入；')
+  console.log('instrument 同理：NODE_ENV=development（或 CODE_FINDER=1）才注入。')
 }
 
 /**
@@ -516,6 +600,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case 'init': return cmdInit(options)
     case 'status': return cmdStatus(options)
     case 'remove': return cmdRemove(options)
+    case 'instrument': return cmdInstrument(options)
     case undefined:
       console.error('dsh-code-finder: 缺少子命令')
       console.error(usage())

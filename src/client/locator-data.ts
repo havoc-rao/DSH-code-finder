@@ -1,10 +1,15 @@
 /**
  * `window.__LOCATOR_DATA__` 注册表读取/解析。
  *
- * 注册表由构建期注入（@locator/babel-jsx，见 src/build/transform.ts）写入：
+ * 注册表由构建期注入写入：
+ * - @locator/babel-jsx（JSX 模式，见 src/build/transform.ts）：`expressions`
+ *   为数字 id 数组；
+ * - 本包 createElement 插件（src/build/create-element.ts）：`expressionsCE`
+ *   为 `c<n>` 字符串 id 对象——与 JSX 条目并排不互踩，读取时两者都查。
+ * 形状：
  * - key 为文件绝对路径（projectPath + filePath）；
- * - value 为 `{ filePath, projectPath, expressions, components, styledDefinitions }`；
- * - expressions 的每个条目是 `{ name, loc: { start, end }, wrappingComponentId }`
+ * - value 为 `{ filePath, projectPath, expressions, components, styledDefinitions, expressionsCE? }`；
+ * - expressions / expressionsCE 的每个条目是 `{ name, loc: { start, end }, wrappingComponentId }`
  *   （位置在 `loc` 里，babel 节点 loc 形状；顶层 `start`/`end` 仅作兼容）。
  * - components 的每个条目是 `{ name, locString, loc }`，表达式经
  *   `wrappingComponentId` 指向包裹它的组件。
@@ -49,6 +54,8 @@ export interface LocatorFileEntry {
   expressions: Record<string, LocatorExpression>
   components: Record<string, LocatorComponent>
   styledDefinitions: Record<string, unknown>
+  /** createElement 插件的条目（`c<n>` 字符串 id，与 locator 数字 id 并排）。 */
+  expressionsCE?: Record<string, LocatorExpression>
 }
 
 declare global {
@@ -80,7 +87,7 @@ export function lookupLocatorData(
   const expressionId = id.slice(sep + 2)
   const entry = data[fullPath]
   if (entry === undefined) return undefined
-  const expression = entry.expressions[expressionId]
+  const expression = entry.expressions[expressionId] ?? entry.expressionsCE?.[expressionId]
   if (expression === undefined) return undefined
   const start = expressionStart(expression)
   return {
@@ -113,7 +120,13 @@ export function lookupComponentNameByPosition(
   let best: LocatorExpression | undefined
   let bestLineDistance = Number.POSITIVE_INFINITY
   let bestColumnDistance = Number.POSITIVE_INFINITY
-  for (const expression of Object.values(entry.expressions)) {
+  // JSX（expressions，数字 id）与 createElement（expressionsCE，c<n> id）条目
+  // 都参与最近位置匹配，互不冲突。
+  const expressions = [
+    ...Object.values(entry.expressions),
+    ...Object.values(entry.expressionsCE ?? {}),
+  ]
+  for (const expression of expressions) {
     const start = expressionStart(expression)
     if (start === undefined) continue
     const lineDistance = Math.abs(start.line - line)

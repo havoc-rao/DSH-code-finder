@@ -1,7 +1,9 @@
 /**
  * Build-time instrumentation core: runs @locator/babel-jsx over an app's own
- * JSX/TSX so every element carries a `data-locatorjs` attribute (path format:
- * `<absFile>:<line>:<col>`) plus a `window.__LOCATOR_DATA__` registry entry.
+ * JSX/TSX plus a createElement/jsx-runtime visitor (src/build/create-element.ts)
+ * over React.createElement-style calls, so every element — JSX or not — carries
+ * a `data-locatorjs` attribute (path format: `<absFile>:<line>:<col>`) plus a
+ * `window.__LOCATOR_DATA__` registry entry.
  *
  * Dev-only by default (NODE_ENV=development or CODE_FINDER=1): in production
  * the transform is a no-op returning the original code, so published bundles
@@ -14,6 +16,7 @@
 import { createRequire } from 'node:module'
 import { transformAsync } from '@babel/core'
 import babelJsx from '@locator/babel-jsx'
+import { codeFinderCreateElement } from './create-element'
 
 // babel 的 preset/plugin 若以裸包名写字符串，会在运行时从「宿主项目」解析
 // （babel 的 cwd/filename 解析规则）——宿主没装 @babel/* 时 transform 静默
@@ -101,9 +104,14 @@ export async function transformWithCodeFinder(
       // pipeline (rolldown/vite handle it), only the locator attributes and
       // the __LOCATOR_DATA__ IIFE are added. TYPESCRIPT_PRESET is an absolute
       // path resolved from THIS package (see the top of the file) so hosts
-      // without a babel install still get instrumentation.
+      // without a babel install still get instrumentation. The createElement
+      // plugin mirrors the JSX semantics for React.createElement / jsx-runtime
+      // calls (zero-build plugins: no JSX anywhere, no bundler to hook).
       presets: [[TYPESCRIPT_PRESET, { isTSX: true, allExtensions: true, allowDeclareFields: true }]],
-      plugins: [[babelJsx, { dataAttribute: options.dataAttribute ?? 'path' }]],
+      plugins: [
+        [babelJsx, { dataAttribute: options.dataAttribute ?? 'path' }],
+        [codeFinderCreateElement, { dataAttribute: options.dataAttribute ?? 'path' }],
+      ],
     })
     if (!result?.code) return null
     return { code: result.code, map: result.map ?? undefined }

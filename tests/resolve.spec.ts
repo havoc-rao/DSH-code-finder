@@ -86,6 +86,36 @@ describe('resolveHit 解析链', () => {
     })
   })
 
+  it('①b2 createElement 模式的 data-locatorjs-id（expressionsCE / c<n> id）反查', () => {
+    ;(window as unknown as { __LOCATOR_DATA__: Record<string, unknown> }).__LOCATOR_DATA__ = {
+      '/abs/src/client.js': {
+        filePath: '/abs/src/client.js',
+        projectPath: '/abs/src',
+        expressions: {},
+        components: {},
+        styledDefinitions: {},
+        // createElement 插件注入形状：c<n> 字符串 id + wrappingComponentId
+        expressionsCE: {
+          c0: {
+            name: 'button',
+            loc: { start: { line: 12, column: 5 }, end: { line: 12, column: 30 } },
+            wrappingComponentId: 0,
+          },
+        },
+      },
+    }
+    const element = document.createElement('div')
+    element.setAttribute('data-locatorjs-id', '/abs/src/client.js::c0')
+    const hit = resolveHit(element, makeFiber())
+    expect(hit).toEqual({
+      name: 'button',
+      path: '/abs/src/client.js',
+      line: 12,
+      column: 5,
+      source: 'data',
+    })
+  })
+
   it('①c data-locatorjs（path 格式）用注册表包裹组件名覆盖 minified fiber 名', () => {
     ;(window as unknown as { __LOCATOR_DATA__: Record<string, unknown> }).__LOCATOR_DATA__ = {
       '/abs/src/Sidebar.tsx': {
