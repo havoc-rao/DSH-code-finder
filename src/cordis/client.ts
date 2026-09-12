@@ -7,7 +7,8 @@
  * - 浏览器无 process 时 catch 后默认启用——被 DSH 插件 bundle 内联时由接入方
  *   的 define 决定，标准 DSH 构建都定义 NODE_ENV；
  * - 逃生门：`<html data-code-finder="off">` 可完全关闭（plan §11 热键冲突逃生门）；
- * - 搜索端点固定为 host 半的路由 `/code-finder/api/search`；
+ * - 端点固定为 host 半的两条路由：`/code-finder/api/search`（④名字搜索）与
+ *   `/code-finder/api/sourcemap`（⑤产物坐标反查）；
  * - fiber 释放（插件卸载 / HMR）时 destroy overlay。
  */
 import { setupCodeFinder } from '../client/index'
@@ -44,6 +45,9 @@ function isDevBuild(): boolean {
 export function apply(ctx: CodeFinderClientContext): void {
   if (!isDevBuild()) return
   if (typeof document !== 'undefined' && document.documentElement.dataset.codeFinder === 'off') return
-  const handle = setupCodeFinder({ searchEndpoint: '/code-finder/api/search' })
+  const handle = setupCodeFinder({
+    searchEndpoint: '/code-finder/api/search',
+    sourcemapEndpoint: '/code-finder/api/sourcemap',
+  })
   ctx.effect(() => () => handle.destroy(), 'dsh-code-finder: overlay teardown')
 }

@@ -6,7 +6,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { FiberLike } from '../src/client/fiber'
-import { parseLocatorPath, resolveHit } from '../src/client/resolve'
+import { isBuildArtifactPath, parseLocatorPath, resolveHit } from '../src/client/resolve'
 
 /** 造一个最小 fiber（type 用真函数，让组件名可提取）。 */
 function makeFiber(partial: Partial<FiberLike> = {}): FiberLike {
@@ -40,6 +40,22 @@ describe('parseLocatorPath', () => {
     expect(parseLocatorPath('no-colons-here')).toBeUndefined()
     expect(parseLocatorPath('/a.tsx:xx:10')).toBeUndefined()
     expect(parseLocatorPath('/a.tsx:10')).toBeUndefined()
+  })
+})
+
+describe('isBuildArtifactPath（第⑤层触发判定）', () => {
+  it('产物路径命中：lib/dist/out/build 段（含 Windows 反斜杠）与产物 js 扩展名', () => {
+    expect(isBuildArtifactPath('/repo/packages/ui/lib/types/client/chat/MessageItem.js')).toBe(true)
+    expect(isBuildArtifactPath('/repo/dist/bundle.mjs')).toBe(true)
+    expect(isBuildArtifactPath('C:\\repo\\out\\app.cjs')).toBe(true)
+    expect(isBuildArtifactPath('/repo/build/renderer.js')).toBe(true)
+    expect(isBuildArtifactPath('/repo/node_modules/x/lib/index.js')).toBe(true) // 有 /lib/ 段即产物
+  })
+
+  it('源码路径不命中：src 下的 js、tsx/ts 源文件', () => {
+    expect(isBuildArtifactPath('/repo/src/foo.js')).toBe(false)
+    expect(isBuildArtifactPath('/repo/packages/ui/src/client/index.ts')).toBe(false)
+    expect(isBuildArtifactPath('/repo/packages/ui/src/client/chat/MessageItem.tsx')).toBe(false)
   })
 })
 

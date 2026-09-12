@@ -24,9 +24,15 @@
  *   expressionsCE（JSX 插件在同一文件时写 expressions——两套并排不互踩，
  *   见 src/client/locator-data.ts 的合并读取）；
  * - Program.exit 追加 `window.__LOCATOR_DATA__` IIFE（与 JSX 插件相同的
- *   文件级 key），已有条目则只补 expressionsCE，重新 instrument 不炸注册表。
+ *   文件级 key），已有条目则只补 expressionsCE，重新 instrument 不炸注册表；
+ * - React Fragment 排除：第一参数 tag（含绑定链别名）解析为 react 的
+ *   Fragment 的调用绝不注入、不产生注册表条目（见 src/build/fragment.ts）；
+ *   老产物/重复 transform 在 fragment props 里遗留的 data-locatorjs /
+ *   data-locatorjs-id 会被顺带剥离（幂等收敛，React dev 不再刷
+ *   `Invalid prop ... supplied to React.Fragment`）。
  */
 import type { NodePath, PluginObj, PluginPass, types as BabelTypes } from '@babel/core'
+import { isReactFragmentTag } from './fragment'
 
 export interface CreateElementPluginOptions {
   /** data-locatorjs 属性格式；'path' 自描述（无需注册表），默认 'path'。 */
@@ -238,6 +244,16 @@ function injectCall(
   const opts = state.opts as { dataAttribute?: 'path' | 'id' } | undefined
   const dataAttribute = opts?.dataAttribute === 'id' ? 'id' : 'path'
 
+  // React Fragment 排除：tag 为 Fragment（含别名绑定链）的调用绝不注入。
+  const tag = args[0]
+  if (tag !== undefined && !t.isArgumentPlaceholder(tag) && !t.isSpreadElement(tag)
+    && isReactFragmentTag(t, path.scope, tag)) {
+    // 幂等收敛：老版本/重复 transform 可能在 fragment props 里遗留 locator 属性，
+    // 一并剥离（Fragment 上带这些属性正是 React dev 警告的来源）。
+    if (t.isObjectExpression(props)) stripLocatorProps(t, props)
+    return false
+  }
+
   if (props !== undefined && !t.isObjectExpression(props)) {
     // null / undefined 字面量允许替换生成新对象；其余表达式不碰。
     if (!(t.isNullLiteral(props) || (t.isIdentifier(props) && props.name === 'undefined'))) return false
@@ -281,6 +297,21 @@ function injectCall(
   }
   entries.push({ key, entry })
   return true
+}
+
+/** 从 props 对象字面量剥离 data-locatorjs / data-locatorjs-id（fragment 收敛用）。 */
+function stripLocatorProps(t: typeof BabelTypes, props: BabelTypes.Expression | undefined): void {
+  if (props === undefined || !t.isObjectExpression(props)) return
+  for (let i = props.properties.length - 1; i >= 0; i -= 1) {
+    const property = props.properties[i]
+    if (!t.isObjectProperty(property) || property.computed) continue
+    const keyName = t.isStringLiteral(property.key) ? property.key.value
+      : t.isIdentifier(property.key) ? property.key.name
+        : undefined
+    if (keyName === 'data-locatorjs' || keyName === 'data-locatorjs-id') {
+      props.properties.splice(i, 1)
+    }
+  }
 }
 
 /** 从 tag 参数提取可读名字（host 元素名 / 组件名；无则省略）。 */

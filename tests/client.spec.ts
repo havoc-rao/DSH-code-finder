@@ -206,6 +206,52 @@ describe('setupCodeFinder', () => {
     vi.unstubAllGlobals()
   })
 
+  it('sourcemapEndpoint 打开时，产物路径命中异步反查为 src 路径（第⑤层）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, data: { path: '/abs/src/client/chat/MessageItem.tsx', line: 96, column: 12 } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const handle = setupCodeFinder({ sourcemapEndpoint: '/code-finder/api/sourcemap' })
+    const el = document.createElement('div')
+    // 产物坐标：lib/types/...js 的 1-based 行列（用户实测形状）
+    el.setAttribute('data-locatorjs', '/abs/repo/packages/ui/lib/types/client/chat/MessageItem.js:2:5')
+    mockRect(el)
+    document.body.appendChild(el)
+
+    pressKeys({ alt: true, shift: true })
+    hover(el)
+    await vi.waitFor(() => {
+      expect(overlayHost()!.shadowRoot!.querySelector('.cf-label')!.textContent).toContain('MessageItem.tsx:96')
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/code-finder/api/sourcemap',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ path: '/abs/repo/packages/ui/lib/types/client/chat/MessageItem.js', line: 2, column: 5 }),
+      }),
+    )
+    handle.destroy()
+    vi.unstubAllGlobals()
+  })
+
+  it('源码路径命中不触发第⑤层（src 下无需反查）', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const handle = setupCodeFinder({ sourcemapEndpoint: '/code-finder/api/sourcemap' })
+    const el = document.createElement('div')
+    el.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
+    mockRect(el)
+    document.body.appendChild(el)
+
+    pressKeys({ alt: true, shift: true })
+    hover(el)
+    await flush()
+    expect(fetchMock).not.toHaveBeenCalled()
+    handle.destroy()
+    vi.unstubAllGlobals()
+  })
+
   it('destroy 解绑全部监听并移除 overlay', () => {
     const handle = setupCodeFinder({})
     const el = document.createElement('div')

@@ -4,7 +4,8 @@
  * - **幂等单例**：重复调用先 destroy 旧的（HMR 友好）；
  * - **热键捕获**：keydown/keyup 记录按住状态；IME 组合输入、输入框内不触发
  *   （复用 better-sidebar ime-guard 的判定思路）；
- * - **mousemove** 按住热键 → 解析链 ①②③ → overlay.show；④ 源码搜索异步补位；
+ * - **mousemove** 按住热键 → 解析链 ①②③ → overlay.show；④ 源码搜索 / ⑤
+ *   sourcemap 反查异步补位；
  * - **click** 按住热键 → 阻止默认行为 → `onClick(hit)`（默认复制
  *   `path:line`，无路径时复制组件名）；
  * - **destroy()** 解绑全部监听并移除 overlay。
@@ -14,7 +15,7 @@
  */
 import { findComponentFiber, findFiberByDomNode } from './fiber'
 import { createOverlay, type OverlayHandle } from './overlay'
-import { resolveHit, type CodeFinderHit } from './resolve'
+import { isBuildArtifactPath, resolveHit, type CodeFinderHit } from './resolve'
 
 /** 热键组合。 */
 export type CodeFinderHotkeys = 'alt+shift' | 'alt' | 'cmd+shift' | null
@@ -26,6 +27,12 @@ export interface CodeFinderOptions {
   onClick?: (hit: CodeFinderHit) => void
   /** 源码搜索端点（cordis host 半提供时传入）；默认 undefined = 关闭第④层。 */
   searchEndpoint?: string
+  /**
+   * sourcemap 反查端点（cordis host 半提供时传入）；默认 undefined = 关闭第⑤层。
+   * 解析链 ①② 命中「构建产物路径」（lib/**\/*.js 等）时，把 `{path,line,column}`
+   * POST 过去，用产物旁 `*.js.map` 反查原始源码坐标后升级显示。
+   */
+  sourcemapEndpoint?: string
   /** 无源码信息时是否显示组件名（默认 true）。 */
   showNamesOnly?: boolean
   /** 调试日志（默认 false）。 */
@@ -45,6 +52,13 @@ interface SearchCandidate {
   line?: number
   column?: number
   name?: string
+}
+
+/** sourcemap 反查结果（与 src/sourcemap.ts 的 ArtifactPosition 对齐；经 parseMapped 校验）。 */
+interface MappedPosition {
+  path: string
+  line?: number
+  column?: number
 }
 
 /** 搜索缓存 TTL（ms）：同名组件短时间内不重复请求。 */
@@ -113,7 +127,9 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
   let lastElement: Element | null = null
   let generation = 0
   let searchController: AbortController | null = null
+  let sourcemapController: AbortController | null = null
   const searchCache = new Map<string, { at: number; candidates: SearchCandidate[] }>()
+  const sourcemapCache = new Map<string, { at: number; mapped: MappedPosition }>()
   let destroyed = false
 
   /** 当前按键状态是否满足热键组合。 */
@@ -136,6 +152,8 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
     lastElement = null
     searchController?.abort()
     searchController = null
+    sourcemapController?.abort()
+    sourcemapController = null
     overlay.hide()
   }
 
@@ -186,6 +204,65 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
     }
   }
 
+  /** 校验并归一 sourcemap 反查结果（{ok, data} 或裸对象都接受）。 */
+  const parseMapped = (body: unknown): MappedPosition | undefined => {
+    const data = (body as { data?: unknown } | null)?.data ?? body
+    if (data === null || typeof data !== 'object') return undefined
+    const mapped = data as Record<string, unknown>
+    if (typeof mapped.path !== 'string' || mapped.path === '') return undefined
+    return {
+      path: mapped.path,
+      ...(typeof mapped.line === 'number' && mapped.line > 0 ? { line: mapped.line } : {}),
+      ...(typeof mapped.column === 'number' && mapped.column > 0 ? { column: mapped.column } : {}),
+    }
+  }
+
+  /** 把 sourcemap 反查结果（{path,line,column}）合入 hit。 */
+  const applyMapped = (hit: CodeFinderHit, mapped: MappedPosition): CodeFinderHit => ({
+    ...hit,
+    path: mapped.path,
+    ...(mapped.line !== undefined ? { line: mapped.line } : {}),
+    ...(mapped.column !== undefined ? { column: mapped.column } : {}),
+    source: 'sourcemap',
+  })
+
+  /** 第⑤层：产物路径命中（data/fiber 且非 search 来源）时，反查原始源码坐标。 */
+  const enrichWithSourcemap = async (hit: CodeFinderHit, gen: number): Promise<CodeFinderHit> => {
+    const endpoint = options.sourcemapEndpoint
+    if (endpoint === undefined || hit.source === 'search' || hit.source === 'sourcemap'
+      || hit.path === undefined || hit.line === undefined || hit.column === undefined
+      || !isBuildArtifactPath(hit.path)) {
+      return hit
+    }
+    const key = `${hit.path}:${hit.line}:${hit.column}`
+    const cached = sourcemapCache.get(key)
+    if (cached !== undefined && Date.now() - cached.at < SEARCH_CACHE_TTL_MS) {
+      return applyMapped(hit, cached.mapped)
+    }
+    sourcemapController?.abort()
+    const controller = new AbortController()
+    sourcemapController = controller
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: hit.path, line: hit.line, column: hit.column }),
+        signal: controller.signal,
+      })
+      if (!response.ok) return hit
+      const mapped = parseMapped(await response.json())
+      if (mapped === undefined) return hit
+      sourcemapCache.set(key, { at: Date.now(), mapped })
+      if (gen !== generation) return hit // 已经 hover 到别处/隐藏，丢弃过期结果
+      log(`sourcemap ${hit.path}:${hit.line}:${hit.column} →`, mapped)
+      return applyMapped(hit, mapped)
+    } catch {
+      return hit
+    } finally {
+      if (sourcemapController === controller) sourcemapController = null
+    }
+  }
+
   const onKeyDown = (event: KeyboardEvent): void => {
     keys.alt = event.altKey
     keys.shift = event.shiftKey
@@ -229,6 +306,15 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
     // ④ 搜索补位：仅当名字级命中且有搜索端点时异步升级
     if (syncHit.source === 'name-only' && options.searchEndpoint !== undefined) {
       void enrichWithSearch(syncHit, gen).then(upgraded => {
+        if (gen !== generation || lastElement !== target) return
+        lastHit = upgraded
+        overlay.show(target, upgraded)
+      })
+      return
+    }
+    // ⑤ sourcemap 反查补位：syncHit 已带路径但指向构建产物时异步升级为源码坐标
+    if (options.sourcemapEndpoint !== undefined) {
+      void enrichWithSourcemap(syncHit, gen).then(upgraded => {
         if (gen !== generation || lastElement !== target) return
         lastHit = upgraded
         overlay.show(target, upgraded)
@@ -283,7 +369,11 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
   document.addEventListener('compositionstart', onCompositionStart, true)
   document.addEventListener('compositionend', onCompositionEnd, true)
 
-  log('setupCodeFinder', { hotkeys, searchEndpoint: options.searchEndpoint ?? null })
+  log('setupCodeFinder', {
+    hotkeys,
+    searchEndpoint: options.searchEndpoint ?? null,
+    sourcemapEndpoint: options.sourcemapEndpoint ?? null,
+  })
 
   const handle: CodeFinderHandle = {
     destroy: () => {

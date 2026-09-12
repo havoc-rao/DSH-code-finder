@@ -17,7 +17,7 @@ runtime 三档）。
 > `docs/private/dsh-injection-guide.md`（含个人环境路径的开发记录，**仅本地
 > 保留、不入库**；发布仓库不含该目录）。
 
-## 三层定位
+## 五层定位
 
 hover 一个元素时按优先级取源码位置：
 
@@ -26,10 +26,17 @@ hover 一个元素时按优先级取源码位置：
 2. **fiber 遍历**（`_debugSource` / `_debugInfo`）——dev React 宿主（如 vite dev
    server）下自动可用，零改动覆盖宿主 UI；
 3. **组件名兜底** + **源码搜索路由**（`/code-finder/api/search`）——生产宿主组件
-   至少显示名字，搜索命中时给出位置。
+   至少显示名字，搜索命中时给出位置；
+4. **sourcemap 反查路由**（`/code-finder/api/sourcemap`）——①② 给出的路径若指向
+   **构建产物**（如 DSH 插件两段式构建的 `lib/types/**/*.js`，tsc 先编译、tsdown
+   再打包，dcf 注入时拿到的就是产物路径），host 半读取产物旁 `*.js.map` 把
+   `产物文件:行:列` 映射回**原始源码坐标**（`src/**/*.tsx`），hover 与点击跳转都
+   指向源码文件。
 
 > 注意：生产 React 构建没有 `_debugSource`，宿主 UI 的精确行号在**不修改宿主构建**
-> 的前提下不可达——这是预期行为（名字级 + 搜索级）。
+> 的前提下不可达——但**构建期注入（①）在产物上同样生效**，配合 ④ 的 sourcemap
+> 反查，两段式构建（tsc → lib → tsdown bundle）的 DSH 插件也能 hover 到 `src/`
+> 源码坐标，这是 ④ 补上前的盲区。
 
 ## 一键接入（npx CLI）
 
@@ -38,8 +45,11 @@ hover 一个元素时按优先级取源码位置：
 ```bash
 npx @havocrao/dsh-code-finder init      # 自动装依赖(pnpm/yarn/npm) + 接线 vite/tsdown/cordis
 npx @havocrao/dsh-code-finder status    # 诊断接线状态 + 产物注入抽查
+dcf status --cwd <dir> --profile web    # 端到端验证：+ profile patch / 宿主 client URL / search API
+dcf ensure <dir> --profile web          # 一站式：接线 + profile roots + dev 构建 + 宿主验证
 npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + 移除依赖
-# 可选: --cwd <dir>  --no-install  --keep-deps  --link <path>  --quiet
+# 可选: --cwd <dir>  --no-install  --keep-deps  --link <path>  --no-build  --script <name>
+#       --root <path>  --host <url>  --no-host-check  --quiet
 ```
 
 - 不产生任何备份文件（副作用零残留）
@@ -47,6 +57,9 @@ npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + �
   （接线后你的手动修改原样保留），并连带移除依赖
 - 幂等：重复 init 无副作用；支持 vite.config.* / tsdown.config.* / cordis.patch.yml
 - 接线后仍需 **dev 语义构建**（`NODE_ENV=development` 或 vite dev）才产生注入，见 docs/README「构建期注入生效机制」
+- DSH 插件「从零到 path 可见」一条命令：`dcf ensure <dir> --profile web`（接线 +
+  profile roots + dev 构建 + 宿主探测，重启只提示不代执行；验证用
+  `dcf status --cwd <dir> --profile web`），详见 docs/README「一站式」
 
 ### 发布前：本地 link 安装（包未上 registry 时）
 
@@ -147,12 +160,17 @@ await instrumentDir('lib', { write: true, projectRoot: process.cwd() })
 setupCodeFinder({
   hotkeys: 'alt+shift',          // 默认；'alt' | 'cmd+shift' | null（null 关闭）
   onClick: (hit) => { /* 打开/复制 hit.path */ },
-  searchEndpoint: '/code-finder/api/search',
+  searchEndpoint: '/code-finder/api/search',          // ④源码搜索（可选）
+  sourcemapEndpoint: '/code-finder/api/sourcemap',    // ⑤产物坐标→源码坐标反查（可选）
   showNamesOnly: true,
   debug: false,
 })
 // 返回 { destroy() }，HMR / 卸载时调用
 ```
+
+> ⑤ 反查只在命中路径像构建产物（含 `lib/`/`dist/` 段，或以 `.js` 结尾且不在
+> `src/` 下）时异步发起；宿主返回 `data: null`（无 `*.js.map` 或坐标无映射）时
+> 保留原产物路径。cordis client 半（`.../client`）已默认传两个端点，直接可用。
 
 ## 包结构
 
@@ -160,7 +178,7 @@ setupCodeFinder({
 
 | 入口 | 内容 |
 |---|---|
-| `@havocrao/dsh-code-finder` | Node 侧：`createSourceIndex` + `handleSearchRequest` + **cordis host 插件**（`name`/`apply`/`inject` re-export） |
+| `@havocrao/dsh-code-finder` | Node 侧：`createSourceIndex` + `handleSearchRequest` + `handleSourcemapRequest`（sourcemap 反查，见 `src/sourcemap.ts`）+ **cordis host 插件**（`name`/`apply`/`inject` re-export） |
 | `.../client` | **cordis 插件 client 半（harness-wire bundle）**：`window.__ModuleLoader__.load({id, factory})` 契约，宿主 `/plugins/.../client.js` 端点直接 serve |
 | `.../runtime` | 运行时 overlay（ESM）：`setupCodeFinder`（零框架依赖）——直接集成 / 自定义宿主用 |
 | `.../cordis` | cordis 插件 host 半独立入口（包根已 re-export，一般用不着） |

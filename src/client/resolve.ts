@@ -6,15 +6,18 @@
  * ② fiber `_debugSource` / `_debugInfo`——dev React 宿主自动可用，零改动；
  * ③ 组件名兜底——任何 React 宿主至少拿到名字（生产宿主无 `_debugSource`，
  *    名字级是预期行为，见 plan §3.1 / README）；
- * ④ 源码搜索（searchEndpoint）在 src/client/index.ts 里异步补位，不阻塞本链。
+ * ④ 源码搜索（searchEndpoint）在 src/client/index.ts 里异步补位，不阻塞本链；
+ * ⑤ sourcemap 反查（sourcemapEndpoint）——①/② 给出的路径若指向构建产物
+ *    （lib/**\/*.js 等），由 host 半用 `*.js.map` 映射回原始源码坐标，同样异步
+ *    补位（src/sourcemap.ts / src/client/index.ts）。
  *
  * 组件名始终从 fiber 提取（属性里只有路径没有名字），与位置合并成完整 hit。
  */
 import { getComponentName, getDebugSource, type FiberDebugSource, type FiberLike } from './fiber'
 import { lookupComponentNameByPosition, lookupLocatorData } from './locator-data'
 
-/** hit 的来源：①②③④（④ 由 index.ts 异步补位）。 */
-export type HitSource = 'data' | 'fiber' | 'search' | 'name-only'
+/** hit 的来源：①②③④⑤（④⑤ 由 index.ts 异步补位）。 */
+export type HitSource = 'data' | 'fiber' | 'search' | 'sourcemap' | 'name-only'
 
 export interface CodeFinderHit {
   /** 组件名（fiber 提取；没有时为空字符串）。 */
@@ -44,6 +47,17 @@ export function parseLocatorPath(value: string): { path: string; line: number; c
     line: Number(linePart),
     column: Number(columnPart),
   }
+}
+
+/**
+ * 构建产物路径判定（第⑤层触发条件）：命中路径指向产物而非源码时，交给 host
+ * 半做 sourcemap 反查。判定规则：
+ * - 路径含产物段（lib/dist/out/build/coverage，Windows 反斜杠也覆盖）；
+ * - 或以 .js/.cjs/.mjs 结尾且不在 src 目录下（真实的 src/foo.js 不误判）。
+ */
+export function isBuildArtifactPath(path: string): boolean {
+  if (/[\\/](?:lib|dist|out|build|_build|coverage)[\\/]/u.test(path)) return true
+  return /\.(?:[mc]?js)$/u.test(path) && !/[\\/]src[\\/]/u.test(path)
 }
 
 function hitFromDebugSource(name: string, source: FiberDebugSource): CodeFinderHit {

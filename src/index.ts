@@ -16,6 +16,7 @@
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
+import { readJsonBody, writeError, writeJson, type CodeFinderHttpRequest, type CodeFinderHttpResponse } from './http'
 
 // cordis 插件 host 半（同名双面 entry 的 node 面）：外部工程挂载
 // `@havocrao/dsh-code-finder` 一行即得 host 半路由 + client 半 overlay。
@@ -32,6 +33,27 @@ export {
   type ResolvedCodeFinderHostConfig,
 } from './cordis/host'
 export { default } from './cordis/host'
+
+// sourcemap 反查（第⑤层）：`POST /code-finder/api/sourcemap` 把产物坐标
+// （data-locatorjs 里的 lib/**\/*.js:line:col）映射回原始源码坐标。host 半在
+// apply 里按 req.url 后缀在 search 与 sourcemap 两个处理器间分发。
+export {
+  decodeMappings,
+  decodeVlqValues,
+  handleSourcemapRequest,
+  loadSourcemap,
+  lookupSourcePosition,
+  mapArtifactPosition,
+  resolveSourcePath,
+  type ArtifactPosition,
+  type OriginalPosition,
+  type SourceMapLike,
+  type SourcemapLookupOptions,
+  type SourcemapRequestDeps,
+} from './sourcemap'
+
+// HTTP 结构子集从共享模块 re-export（老引用路径 `../src/index` 不破）。
+export type { CodeFinderHttpRequest, CodeFinderHttpResponse } from './http'
 
 export interface SourceIndexOptions {
   /** 扫描根目录（绝对路径；不存在的目录静默跳过）。 */
@@ -264,21 +286,8 @@ export function createSourceIndex(options: SourceIndexOptions): SourceIndex {
 }
 
 // ── HTTP 薄封装（供 cordis host 半与接入方复用）──────────────────────────────
-
-/** 路由处理器收到的请求结构子集（与宿主 webServer 的 req 一致，见 be-sider SidebarHttpRequest）。 */
-export interface CodeFinderHttpRequest {
-  url?: string
-  method?: string
-  headers: Record<string, string | string[] | undefined>
-  [Symbol.asyncIterator](): AsyncIterator<string | Uint8Array>
-}
-
-/** 响应结构子集（writeHead/end）。 */
-export interface CodeFinderHttpResponse {
-  statusCode: number
-  writeHead(status: number, headers?: Record<string, string>): void
-  end(body?: string | Uint8Array): void
-}
+// 请求/响应结构子集与 JSON 读写实现在 src/http.ts（search 与 sourcemap 两个
+// fenced 路由共享），此处直接复用并 re-export 类型（老引用路径不变）。
 
 export interface SearchRequestDeps {
   /** 信任 fence：返回 false 直接 403（拒绝越权；cordis host 半自带 loopback fence）。 */
@@ -290,37 +299,6 @@ export interface SearchRequestDeps {
 /** 组件名合法性：只允许标识符字符，杜绝路径穿越/注入类输入。 */
 const NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/u
 const MAX_NAME_LENGTH = 120
-
-async function readJsonBody(req: CodeFinderHttpRequest): Promise<unknown> {
-  try {
-    const chunks: Uint8Array[] = []
-    for await (const chunk of req) {
-      chunks.push(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk)
-    }
-    if (chunks.length === 0) return undefined
-    const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
-    const buffer = new Uint8Array(total)
-    let offset = 0
-    for (const chunk of chunks) {
-      buffer.set(chunk, offset)
-      offset += chunk.byteLength
-    }
-    const text = new TextDecoder().decode(buffer)
-    if (text.trim() === '') return undefined
-    return JSON.parse(text) as unknown
-  } catch {
-    return undefined
-  }
-}
-
-function writeJson(res: CodeFinderHttpResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
-  res.end(JSON.stringify(body))
-}
-
-function writeError(res: CodeFinderHttpResponse, status: number, code: string, message: string): void {
-  writeJson(res, status, { ok: false, error: { code, message } })
-}
 
 /**
  * 处理 `POST /code-finder/api/search`。入参 `{ name }`，出参

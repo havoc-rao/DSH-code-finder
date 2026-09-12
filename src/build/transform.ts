@@ -17,6 +17,7 @@ import { createRequire } from 'node:module'
 import { transformAsync } from '@babel/core'
 import babelJsx from '@locator/babel-jsx'
 import { codeFinderCreateElement } from './create-element'
+import { codeFinderJsxFragments } from './jsx-fragments'
 
 // babel 的 preset/plugin 若以裸包名写字符串，会在运行时从「宿主项目」解析
 // （babel 的 cwd/filename 解析规则）——宿主没装 @babel/* 时 transform 静默
@@ -107,10 +108,20 @@ export async function transformWithCodeFinder(
       // without a babel install still get instrumentation. The createElement
       // plugin mirrors the JSX semantics for React.createElement / jsx-runtime
       // calls (zero-build plugins: no JSX anywhere, no bundler to hook).
+      // codeFinderJsxFragments sits LAST in the chain: @babel/traverse runs the
+      // merged Program.exit handlers in plugin order (verified empirically on
+      // babel 7.29), so its exit executes after @locator/babel-jsx has appended
+      // the __LOCATOR_DATA__ IIFE — it then strips data-locatorjs from fragment
+      // elements (the aliased `<F>` / `<FR.Fragment>` forms upstream still
+      // injects) and prunes the matching registry entries, keeping the registry
+      // consistent with the injected surface. The strip itself happens at
+      // JSXElement visit time, which is always after the locator's
+      // Program.enter manual traverse, so plugin position is irrelevant for it.
       presets: [[TYPESCRIPT_PRESET, { isTSX: true, allExtensions: true, allowDeclareFields: true }]],
       plugins: [
         [babelJsx, { dataAttribute: options.dataAttribute ?? 'path' }],
         [codeFinderCreateElement, { dataAttribute: options.dataAttribute ?? 'path' }],
+        [codeFinderJsxFragments, { dataAttribute: options.dataAttribute ?? 'path' }],
       ],
     })
     if (!result?.code) return null

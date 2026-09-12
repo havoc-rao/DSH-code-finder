@@ -8,16 +8,19 @@ React 组件 → overlay 显示组件名 + `文件:行`；**点击**打开源码
 
 接入方式按集成深度分三档：
 
-| 方式 | 构建期注入（元素级精确行号） | fiber 名字级 | 源码搜索（宿主 UI 兜底） | 改动量 |
+| 方式 | 构建期注入（元素级精确行号） | fiber 名字级 | 源码搜索/反查（宿主 UI 兜底） | 改动量 |
 |---|---|---|---|---|
 | A. vite 项目 | ✓ | ✓ | 可选 | 插件一行 + 入口一行 |
 | B. tsdown 项目（DSH 插件 client bundle） | ✓ | ✓ | 可选 | 插件一行 + 入口一行 |
 | C. cordis 纯 runtime（DSH 插件生态） | 不加则无 | ✓ | ✓（host 半自动挂路由） | `cordis.patch.yml` 两行 |
 
-> 三层定位（plan §3.1）：**①构建期注入的 `data-locatorjs` 属性（精确）→
-> ②fiber `_debugSource`（dev React 宿主）→ ③组件名兜底 → ④源码搜索（尽力而为）**。
+> 五层定位（plan §3.1）：**①构建期注入的 `data-locatorjs` 属性（精确）→
+> ②fiber `_debugSource`（dev React 宿主）→ ③组件名兜底 → ④源码搜索（尽力而为）
+> → ⑤sourcemap 反查（产物坐标 → 源码坐标）**。
 > 生产 React 没有 `_debugSource`，宿主 UI 的精确行号在**不修改宿主构建**的前提下
-> 不可达——名字级 + 搜索级是预期行为（见下文「宿主 UI 的定位能力」）。
+> 不可达——名字级 + 搜索级是预期行为；但**构建期注入在产物上同样生效**，两段式
+> 构建（tsc → lib → tsdown 打包）的插件借 ⑤ 把 `lib/**/*.js` 坐标反查回
+> `src/**/*.tsx`（见下文「宿主 UI 的定位能力」与 `src/sourcemap.ts`）。
 
 ---
 
@@ -28,8 +31,15 @@ React 组件 → overlay 显示组件名 + `文件:行`；**点击**打开源码
 ```bash
 npx @havocrao/dsh-code-finder init      # 自动装依赖 + 接线（vite/tsdown/cordis 自动检测）
 npx @havocrao/dsh-code-finder status    # 诊断：接线状态 + 依赖 + 产物 data-locatorjs 注入抽查
+dcf status --cwd <dir> --profile web    # 端到端验证：+ profile patch / 宿主 client URL / search API
+dcf ensure <dir> --profile web          # 一站式：接线 + profile roots + dev 构建 + 宿主验证（见下节）
 npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + 移除依赖
-# 可选: --cwd <dir>  --no-install  --keep-deps  --link <path>  --quiet
+# DSH profile 的配置 roots 覆盖（C 档源码搜索目录）：
+dcf roots list web                      # 列出 web profile 当前覆盖（无覆盖显示默认语义）
+dcf roots add web /abs/path/to/UI/src   # 幂等追加（~ 展开、相对路径按 --cwd 归一化、去重）
+dcf roots remove web /abs/path/to/UI/src
+# 可选: --cwd <dir>  --no-install  --keep-deps  --link <path>  --no-build  --script <name>
+#       --root <path>  --host <url>  --no-host-check  --quiet
 ```
 
 - **零备份**：不写任何 `.code-finder.bak` 文件（无残留副作用）；`remove` 走
@@ -40,8 +50,63 @@ npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + �
 - **覆盖三种接线**：`vite.config.*`（plugins 数组插 `codeFinderVite()`）、
   `tsdown.config.*`（每个 plugins 数组插 `codeFinderTsdown()`）、
   `cordis.patch.yml`（一行双面插件，缩进随块对齐）；
+- **roots 覆盖是「完全替换」**：profile 里一旦写了 `config.roots`，host 半
+  默认 roots（`~/.dsh/source/current` + 宿主进程 `cwd/src`）不再并入（见
+  `src/cordis/host.ts` 的 `config?.roots ?? defaultRoots()`）。所以
+  `dcf roots add` 在**创建新覆盖块时自动播种这两条默认根**（写全语义），
+  已有列表只幂等追加；清空后 `dcf roots remove` 会删除整块、恢复默认；
 - 接线后仍需 **dev 语义构建**（见「构建期注入生效机制」）才产生注入；
 - `remove` 连带卸载依赖（`--keep-deps` 保留）；手动 `pnpm remove @havocrao/dsh-code-finder`。
+
+### 一站式：从零到「code-ref path 可见」（dcf ensure）
+
+DSH 插件场景（B 档构建注入 + C 档搜索兜底组合）的整条链路——「构建产物带
+`data-locatorjs` 注入 → profile roots 覆盖 → 宿主挂载 → 源码搜索返回
+`file:line`」——由一条命令驱动，无需手工拼步骤：
+
+```bash
+dcf ensure /path/to/plugin --profile web
+```
+
+| 环节 | 命令 | 说明 |
+|---|---|---|
+| 接线（装依赖 + vite/tsdown/cordis 注入） | `dcf ensure <dir>` [1/4]（或 `dcf init --cwd <dir>`） | 幂等；已接入则零改动；`--no-install` 跳过装依赖 |
+| profile roots 覆盖 | `dcf ensure <dir>` [2/4]（或 `dcf roots add <profile> <src>`） | 播种两条默认根 + `<dir>/src`（`--root <path>` 可重复追加）；已有条目跳过 |
+| dev 构建 | `dcf ensure <dir>` [3/4] | 自动识别 `build:dev` / `build-dev` / `dev:build` 等脚本，以 `NODE_ENV=development` 运行；`--script <name>` 指定、`--no-build` 跳过 |
+| 宿主重启（破坏性，不代执行） | 输出指令 | 旧 boot 不加载新产物 / 新 roots；`dsh web stop && dsh web`（或 `dsh web --dev` 前台） |
+| 端到端验证 | `dcf ensure <dir>` [4/4]（或 `dcf status --cwd <dir> --profile <name>`） | 产物 data-locatorjs 计数、profile patch 覆盖、宿主 client bundle URL、search API 命中 |
+
+「从零到 path 可见」完整命令序列（web profile、宿主 127.0.0.1:3080）：
+
+```bash
+# 0) 前提：宿主起着（dsh web），插件包已进 profile 的 bundle 栈
+#    （dsh plugin --profile web add <路径或 tgz>，或 link 依赖）。
+#    下面一条命令完成：接线 → roots → dev 构建 → 验证：
+dcf ensure /path/to/plugin --profile web
+# ⚠ 若出现「当前 boot 未挂该插件 / 索引未命中」——旧进程不读新补丁/新产物，
+#    重启宿主（dcf 只提示、绝不代你杀进程）：
+dsh web stop && dsh web
+# 1) 重启后一条命令复检（期望：client bundle 200 + search API 命中组件 → file:line）：
+dcf status --cwd /path/to/plugin --profile web
+```
+
+`dcf status --profile` 的宿主检查（只读探测，`--host <url>` 指定宿主、默认
+`http://127.0.0.1:3080`、`--no-host-check` 离线跳过）：
+
+- `GET /plugins/<包名>/client.js` → 200 = 当前 boot 已挂插件 client（旧 boot 404）；
+- `POST /code-finder/api/search` `{name: <组件名>}` → `data[]` 非空即「组件名 →
+  file:line」索引命中，是 path 可见的直接证据；探测组件名由 CLI 从 `<dir>/src`
+  自动提取，且只选**源码索引同构的声明形态**（PascalCase 的 function / 箭头
+  函数 / class——纯字符串常量如 `GUIDE_STROKE` 不会被索引，也不作探测目标）；
+- `POST /code-finder/api/sourcemap` `{path, line, column}`（产物坐标）→
+  `data` 为源码坐标对象或 `null`——host 半读取产物旁 `*.js.map` 反查（第⑤层，
+  见 src/sourcemap.ts），两段式构建（tsc → lib → tsdown）的插件 hover 也能落回
+  `src/**/*.tsx`。
+
+> ensure 全程幂等：接线与 roots 只做最小文本手术，已就绪时零写入；构建环节
+> 以 `NODE_ENV=development` 调用项目自己的 dev 脚本（如 `build:dev`），产物
+> 逐字节一致性取决于构建工具本身（如 lightningcss 的 CSS class-map 键序随
+> 进程随机），dcf 侧文件两次执行字节级一致。
 
 ## A. vite 项目
 
@@ -99,18 +164,36 @@ DSH 插件的 `cordis.patch.yml` **挂一行**即可——同一 entry 双面：
 - insert:
     - id: code-finder
       name: '@havocrao/dsh-code-finder'        # 一行双面：host 半 + client 半
-      config: { roots: ['/abs/path/to/plugin/src', '~/.dsh/source/current'] }
+      config: { roots: ['/abs/path/to/plugin/src'] }
 ```
+
+> 配置 roots 注意：根目录**不展开 `~`**（`~/.dsh/source/current` 会被静默
+> 跳过），要写 home 展开后的绝对路径；`config.roots` 是**完全替换**默认
+> roots，需要默认根就显式列出。若 dcf 已随官方 bundle 挂载（`dsh plugin
+> add` 一行装好，见仓库根 cordis.patch.yml），想要**只改 roots 不动挂载行**，
+> 用 profile patch 层的 id 定位补丁（或用 `dcf roots add|remove|list <profile>`）：
+>
+> ```yaml
+> - id: dsh-code-finder
+>   config:
+>     roots:
+>       - /Users/<you>/.dsh/source/current
+>       - !!js "process.cwd() + '/src'"
+>       - /abs/path/to/plugin/src
+> ```
+>
+> （`- overrides:` 包裹写法是无效方言：当前 Loader 不识别，boot 告警并跳过。）
 
 > 注：`.../cordis` 与 `.../cordis/client` 作为**独立入口**保留（包主入口已
 > re-export host 半；`.../client` 是 harness-wire bundle），一般用不着显式引用。
 
 - host 半：建源码索引（默认 roots `~/.dsh/source/current` + 当前进程
-  `cwd/src`）+ 注册 `POST /code-finder/api/search`；自带 loopback 信任 fence，
+  `cwd/src`）+ 注册 `POST /code-finder/api/search` 与 `POST /code-finder/api/sourcemap`
+  （产物坐标 → 源码坐标的反查，见 src/sourcemap.ts）；自带 loopback 信任 fence，
   只读、只扫配置 roots、拒绝越权；
 - client 半：wire bundle 里按「无 process 即 dev」默认启用
-  `setupCodeFinder({ searchEndpoint: '/code-finder/api/search' })`；逃生门：
-  `<html data-code-finder="off">` 可完全关闭；
+  `setupCodeFinder({ searchEndpoint: '/code-finder/api/search', sourcemapEndpoint: '/code-finder/api/sourcemap' })`；
+  逃生门：`<html data-code-finder="off">` 可完全关闭；
 - 想给插件自己的组件加**元素级行号**：再在自己的构建里加 B 档的
   `codeFinderTsdown()`（需 `NODE_ENV=development`，见「构建期注入生效机制」）
   ——不加也不影响名字级/搜索级；
@@ -130,7 +213,8 @@ import { setupCodeFinder } from '@havocrao/dsh-code-finder/runtime'
 
 setupCodeFinder({
   hotkeys: 'alt+shift',              // 'alt+shift' | 'alt' | 'cmd+shift' | null（null 关闭）
-  searchEndpoint: '/code-finder/api/search',  // 可选：第④层源码搜索
+  searchEndpoint: '/code-finder/api/search',      // 可选：第④层源码搜索
+  sourcemapEndpoint: '/code-finder/api/sourcemap', // 可选：第⑤层产物坐标→源码坐标反查
   onClick: (hit) => {
     if (hit.path) openFile(hit.path, hit.line) // 打开/跳转由你实现
     else copyName(hit)
@@ -181,12 +265,21 @@ return process.env.NODE_ENV === 'development' || process.env.CODE_FINDER === '1'
 
 | 场景 | 元素级行号 | 组件名 | 搜索命中位置 |
 |---|---|---|---|
-| 应用自己构建（构建期注入） | ✓ `data-locatorjs` | ✓ | 不需要 |
+| 应用自己构建（构建期注入，产物即源码） | ✓ `data-locatorjs` | ✓ | 不需要 |
+| 应用自己构建（两段式：tsc → lib → tsdown 打包） | ✓ `data-locatorjs` → ⑤ sourcemap 反查回 `src/**/*.tsx` | ✓ | 不需要 |
 | dev React 宿主（vite dev server） | ✓ fiber `_debugSource` | ✓ | 不需要 |
 | 生产 React 宿主（`react-dom.production.min.js`） | ✗ 不可达 | ✓ 名字级 | ✓ 搜索级 |
 
 生产宿主无 `_debugSource`、也无权改宿主构建——**「名字级 + 搜索级」是预期行为，
 不承诺行号**。搜索命中的位置来自 host 半按 roots 扫出的「组件声明名 → file:line」。
+
+两段式构建的行号来源是 ⑤：`data-locatorjs` 注入在 tsdown 打包的 `lib/**/*.js`
+上（坐标即产物坐标），client 半发现命中路径是产物后 POST
+`/code-finder/api/sourcemap`，host 半读取产物旁 `*.js.map`（tsc/tsdown 默认生成；
+sources 相对 map 目录，打包器改写过的浏览器 URL 形式按配置 roots 兜底拼接）
+反查原始坐标——hover 显示 `MessageItem.tsx:219:35` 而非
+`lib/types/client/chat/MessageItem.js:96:297`。无 map（如发布时被 files 过滤）时
+静默回退产物路径，不阻断 hover。
 
 ## be-sider（better-sidebar）case：端到端试用
 
@@ -233,6 +326,7 @@ dsh web    # keyless；浏览器打开日志里的 http://127.0.0.1:<port>
 |---|---|
 | 按住 Opt+Shift 悬停 sidebar 组件 | 蓝色边框 + `<Sidebar> Sidebar.tsx:NN:CC`（元素级精确，真实组件名） |
 | 按住 Opt+Shift 悬停宿主 UI（chat 区） | 组件名（生产宿主无行号）+ 搜索命中时 `文件名:行`（第④层，需 dsh-code-finder host 半在跑） |
+| 按住 Opt+Shift 悬停**两段式构建的插件**（tsc→lib 再打包） | 见 `src/**/*.tsx` 坐标：`data-locatorjs` 指向 `lib/**/*.js` 时第⑤层用配套 `.js.map` 反查回源码（需 host 半在跑 + 产物旁保留 map） |
 | 点击 sidebar 组件 | 本地 IDE 打开（默认 `buddycn -g file:line:col`，可配 `code` 等） |
 | 点击宿主组件（搜索也没命中） | 复制组件名到剪贴板 |
 | 本地 IDE 未装 / 关闭本地打开 | 自动回退侧边栏编辑器打开 |
@@ -270,17 +364,21 @@ dsh web    # keyless；浏览器打开日志里的 http://127.0.0.1:<port>
 → 重打 tarball + `dsh plugin --profile web add file:...tgz`（或先 `remove` 再 `add`）
 → 刷新页面。
 
-调试：`setupCodeFinder({ debug: true })` 开 console 日志；逃生门
-`<html data-code-finder="off">` 完全关闭；试完清理
-`dsh plugin --profile web remove dsh-better-sidebar`。
+调试：`setupCodeFinder({ debug: true })` 开 console 日志（第⑤层反查会打印
+`sourcemap <产物路径> → <源码坐标>`）；逃生门 `<html data-code-finder="off">`
+完全关闭；试完清理 `dsh plugin --profile web remove dsh-better-sidebar`。
 
 ### 常见坑
 
 - `pnpm build`（不带 NODE_ENV）会把 `lib/client*.js` 覆盖回**无注入**版本——试完
   生产构建要继续试用需重跑 dev 构建；
-- 搜索层依赖 **dsh-code-finder host 半**路由在跑（be-sider 不自带 `/code-finder/api`；
-  `dsh web` 起着 + profile 挂了 host 半）；首次搜索触发懒建索引——
-  `~/.dsh/source/current` 不存在时宿主组件搜不到（插件自己的 src 始终可搜）；
+- 搜索层与第⑤层反查都依赖 **dsh-code-finder host 半**路由在跑（be-sider 不自带
+  `/code-finder/api`；`dsh web` 起着 + profile 挂了 host 半）；首次搜索触发懒建
+  索引——`~/.dsh/source/current` 不存在时宿主组件搜不到（插件自己的 src 始终可搜）；
+- **两段式构建拿不到源码路径**：`data-locatorjs` 在 tsdown 打包 `lib/types/**/*.js`
+  时注入，路径指向产物——第⑤层反查要求宿主机器上**产物旁保留 `*.js.map`**
+  （tsc/tsdown 默认生成；发布时被 `files` 过滤掉 map 的包会反查失败，回退显示
+  产物路径）；
 - Opt+Shift 与 macOS 输入法切换冲突时：`hotkeys: 'cmd+shift'` 或 `null`。
 
 ## 兼容性与注意事项

@@ -309,3 +309,288 @@ describe('transformWithCodeFinder: createElement 模式', () => {
     )).toBeNull()
   })
 })
+
+describe('transformWithCodeFinder: React Fragment 绝不注入', () => {
+  const FILE = '/proj/src/Frags.tsx'
+  const RUN = (code: string, options: Parameters<typeof transformWithCodeFinder>[2] = {}) =>
+    transformWithCodeFinder(code, FILE, { enabled: true, projectRoot: '/proj', ...options })
+
+  /** data-locatorjs 出现次数（属性 + 注册表条目一并统计）。 */
+  const count = (code: string): number => code.split('data-locatorjs').length - 1
+
+  it('简写 <>...</>：fragment 自身与注册表零注入（JSXFragment 形态）', async () => {
+    const source = [
+      "import { Fragment } from 'react'",
+      'export function A(props) {',
+      '  return <>{props.fallback ?? null}</>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    expect(result).not.toBeNull()
+    // fragment 无属性、子无元素 → 全文件一个 locator 属性都不该有（注册表 expressions 也为空）
+    expect(result!.code).not.toContain('data-locatorjs')
+  })
+
+  it('简写 <>...</> 带子元素：子元素正常注入，fragment 自身不注入', async () => {
+    const source = [
+      "import { Fragment } from 'react'",
+      'export function A(props) {',
+      '  return <>',
+      '    <div>a</div>',
+      '    <span>b</span>',
+      '  </>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    // 两个子元素注入；fragment 简写没有可挂属性的位置，字面断言 `<>` 后不出现 locator 值
+    expect(count(code)).toBe(2)
+    expect(code).not.toMatch(/<>\s*\{\s*"data-locatorjs"/u)
+    expect(code).not.toContain('"name": "Fragment"')
+  })
+
+  it('显式 <Fragment>：openingElement 无 locator 属性、注册表无 Fragment 条目，子元素照常', async () => {
+    const source = [
+      "import { Fragment } from 'react'",
+      'export function B() {',
+      '  return <Fragment><div>b</div></Fragment>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(code).toContain('</Fragment>')
+    expect(code).not.toMatch(/<Fragment\s+data-locatorjs/u)
+    expect(code).not.toContain('"name": "Fragment"')
+    expect(count(code)).toBe(1) // 仅子 div
+  })
+
+  it('显式 <React.Fragment>：同样跳过', async () => {
+    const source = [
+      "import React from 'react'",
+      'export function C() {',
+      '  return <React.Fragment><div>c</div></React.Fragment>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(code).toContain('</React.Fragment>')
+    expect(code).not.toMatch(/<React\.Fragment\s+data-locatorjs/u)
+    expect(code).not.toContain('"name": "React.Fragment"')
+    expect(count(code)).toBe(1)
+  })
+
+  it('别名 <F>（const F = Fragment）：上游注入的属性被补偿剥离，注册表条目被清理', async () => {
+    const source = [
+      "import { Fragment } from 'react'",
+      'export function D() {',
+      '  const F = Fragment',
+      '  return <><F marker={1} /><div marker={2} /></>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    // 只有子 div 注入
+    expect(count(code)).toBe(1)
+    expect(code).not.toMatch(/<F\s+[^>]*data-locatorjs/u)
+    expect(code).not.toContain('"name": "F"')
+    // 注册表 expressions：F 的条目被挖洞、div 条目保留（数组索引不被挤压）
+    expect(code).toMatch(/"expressions": \[, \{\s*"name": "div"/s)
+  })
+
+  it('成员别名 <FR.Fragment>（const FR = React）：同样剥离且不残留条目', async () => {
+    const source = [
+      "import React, { Fragment } from 'react'",
+      'export function E() {',
+      '  const FR = React',
+      '  return <><FR.Fragment marker={1} /><i marker={2} /></>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(count(code)).toBe(1)
+    expect(code).not.toMatch(/<FR\.Fragment\s+[^>]*data-locatorjs/u)
+    expect(code).not.toContain('"name": "FR.Fragment"')
+    expect(code).toContain('"name": "i"')
+  })
+
+  it('id 模式：别名 fragment 同样无 data-locatorjs-id、无注册表残留', async () => {
+    const source = [
+      "import { Fragment } from 'react'",
+      'export function D() {',
+      '  const F = Fragment',
+      '  return <><F marker={1} /><div marker={2} /></>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source, { dataAttribute: 'id' })
+    const code = result!.code
+    expect(code.split('data-locatorjs-id').length - 1).toBe(1) // 仅 div
+    expect(code).not.toMatch(/<F\s+[^>]*data-locatorjs-id/u)
+    expect(code).not.toContain('"name": "F"')
+  })
+
+  it('工厂 createElement(Fragment, ...)：不注入、不产生 expressionsCE 条目', async () => {
+    const source = [
+      "import React from 'react'",
+      'export function G() {',
+      "  return React.createElement(Fragment, { marker: 1 })",
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(code).not.toContain('data-locatorjs')
+    expect(code).not.toContain('expressionsCE') // 零工厂条目 → 插件不追加 IIFE
+  })
+
+  it('工厂 jsx(Fragment, ...)（tsc 产物形态）：不注入、不产生 expressionsCE 条目', async () => {
+    const source = [
+      "import { jsx as _jsx } from 'react/jsx-runtime'",
+      'export function H() {',
+      "  return _jsx(Fragment, { children: 'hi' })",
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(code).not.toContain('data-locatorjs')
+    expect(code).not.toContain('expressionsCE')
+  })
+
+  it('工厂别名 jsx(F, ...)（const F = Fragment）与解构 const { Fragment } = React：都跳过', async () => {
+    const source = [
+      "import React from 'react'",
+      'export function H() {',
+      '  const F = Fragment',
+      "  return [F, React.createElement(Fragment, { marker: 1 })]",
+      '}',
+      'export function K() {',
+      '  const { Fragment: G } = React',
+      "  return React.createElement(G, { marker: 2 })",
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(code).not.toContain('data-locatorjs')
+    expect(code).not.toContain('expressionsCE')
+  })
+
+  it('tsc 产物形态：import { Fragment as _Fragment, jsx as _jsx } from react/jsx-runtime 的 _jsx(_Fragment, ...) 跳过', async () => {
+    // deepseek-harness 的 dev 管线在 tsc emit 上跑 transform——<>...</> 已被编译成
+    // `_jsx(_Fragment, { children })`（别名 ImportSpecifier），是本问题的实测触发形态。
+    const source = [
+      'import { jsx as _jsx, Fragment as _Fragment, jsxs as _jsxs } from "react/jsx-runtime"',
+      'export function Slot({ children }) {',
+      "  if (!children) return _jsx(_Fragment, { children: null })",
+      "  return _jsx('div', { className: 'x', children: children })",
+      '}',
+      'export function List({ items }) {',
+      "  return _jsxs(_Fragment, { children: items.map((item) => _jsx('span', { children: item })) })",
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source, { projectRoot: '/proj' })
+    const code = result!.code
+    // 两个 Fragment 调用零注入、零注册表条目；div/span 两个普通调用照常（各 1 个属性）
+    expect(count(code)).toBe(2)
+    expect(code).not.toMatch(/_jsx\(_Fragment, \{\s*children: null,\s*"data-locatorjs"/u)
+    expect(code).not.toContain('"name": "_Fragment"')
+    expect(code).toContain('"name": "div"')
+  })
+
+  it('JSX 侧别名 import { Fragment as F }：<F> 剥离且无注册表条目', async () => {
+    const source = [
+      'import { Fragment as F } from "react"',
+      'export function A() {',
+      '  return <><F marker={1} /><div marker={2} /></>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(count(code)).toBe(1) // 仅 div
+    expect(code).not.toMatch(/<F\s+[^>]*data-locatorjs/u)
+    expect(code).not.toContain('"name": "F"')
+  })
+
+  it('jsx.tsx 混编 + 对照组：普通 div/组件正常注入，fragment 形态全部干净', async () => {
+    const source = [
+      "import React, { Fragment } from 'react'",
+      "import { jsx as _jsx } from 'react/jsx-runtime'",
+      'export function M() {',
+      '  const F = Fragment',
+      '  return (',
+      '    <>',
+      '      <F marker={1} />',
+      '      <Fragment marker={2} />',
+      '      <React.Fragment marker={3} />',
+      "      <div marker={4} />",
+      "      {_jsx('span', { marker: 5 })}",
+      "      {_jsx(F, { marker: 6 })}",
+      '    </>',
+      '  )',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    // div（JSX 属性）+ 工厂 span（对象属性）= 2 处注入；两个 _jsx(Fragment/F) 都跳过
+    expect(count(code)).toBe(2)
+    expect(code).not.toMatch(/<F\s+[^>]*data-locatorjs/u)
+    expect(code).not.toMatch(/<Fragment\s+data-locatorjs/u)
+    expect(code).not.toMatch(/<React\.Fragment\s+data-locatorjs/u)
+    // 注册表：locator expressions 只有 div 一条（<F> 的条目已挖洞，div 是索引 1）；
+    // expressionsCE 只有工厂 span 一条（c0）
+    expect(code).toMatch(/"expressions": \[, \{\s*"name": "div"/s)
+    expect(code).toMatch(/"expressionsCE": \{\s*"c0": \{\s*"name": "span"/s)
+  })
+
+  it('幂等收敛：老产物/stale 属性（<F data-locatorjs=...>、jsx(Fragment, {"data-locatorjs"})）被剥离', async () => {
+    const source = [
+      "import { Fragment } from 'react'",
+      "import { jsx as _jsx } from 'react/jsx-runtime'",
+      'export function W() {',
+      '  const F = Fragment',
+      '  return (',
+      '    <>',
+      '      <F data-locatorjs="stale:1:1" marker={1} />',
+      '      {_jsx(Fragment, { children: "x", "data-locatorjs": "stale:2:2" })}',
+      '    </>',
+      '  )',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(code).not.toContain('stale:1:1')
+    expect(code).not.toContain('stale:2:2')
+    expect(code).not.toContain('data-locatorjs')
+  })
+
+  it('遮蔽守卫：本地同名组件（function F / const FR = MyLib）不是 react Fragment，照常注入', async () => {
+    const source = [
+      "import { Fragment } from 'react'",
+      'function F() { return null }',
+      'function MyLib() { return null }',
+      'export function W() {',
+      '  const FR = MyLib',
+      '  return <><F marker={1} /><FR.Fragment marker={2} /></>',
+      '}',
+      '',
+    ].join('\n')
+    const result = await RUN(source)
+    const code = result!.code
+    expect(code).toMatch(/<F\s+[^>]*data-locatorjs/u)
+    expect(code).toMatch(/<FR\.Fragment\s+[^>]*data-locatorjs/u)
+    expect(code).toContain('"name": "F"')
+    expect(code).toContain('"name": "FR.Fragment"')
+    await expect(RUN(`export const N = () => null`)).resolves.not.toBeNull()
+  })
+})

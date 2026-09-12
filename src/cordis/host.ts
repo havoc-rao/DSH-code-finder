@@ -1,5 +1,8 @@
 /**
- * cordis 插件 host 半：注册 `POST /code-finder/api/search` 路由（源码搜索第④层）。
+ * cordis 插件 host 半：注册两个 fenced 路由——
+ * - `POST /code-finder/api/search`：源码搜索（第④层，按组件名）；
+ * - `POST /code-finder/api/sourcemap`：sourcemap 反查（第⑤层，把构建产物坐标
+ *   `lib/...\/*.js:line:col` 映射回原始源码坐标，见 src/sourcemap.ts）。
  *
  * 挂载即用（其他 DSH 插件一行接入，见 docs/README.md「cordis 纯 runtime」）：
  * - 轻量信任 fence（src/cordis/trust.ts，loopback / trustedHosts）拒绝越权；
@@ -13,6 +16,7 @@ import { join } from 'node:path'
 import {
   createSourceIndex,
   handleSearchRequest,
+  handleSourcemapRequest,
   type CodeFinderHttpRequest,
   type CodeFinderHttpResponse,
   type SourceIndex,
@@ -28,13 +32,13 @@ export const inject = ['webServer', 'webRuntime']
 
 /** host 半配置（可空：默认 roots 为 ~/.dsh/source/current + cwd/src）。 */
 export interface CodeFinderHostConfig {
-  /** 源码搜索根目录（绝对路径）。 */
+  /** 源码搜索根目录（绝对路径）；同时用于 sourcemap sources 的兜底拼接。 */
   roots?: string[]
   /** 参与索引的扩展名；默认 ['.tsx', '.ts', '.jsx', '.js']。 */
   exts?: string[]
   /** 排除规则（路径片段或正则）；默认 node_modules + 常见产物目录。 */
   exclude?: Array<string | RegExp>
-  /** 路由前缀；默认 '/code-finder/api'（POST /code-finder/api/search）。 */
+  /** 路由前缀；默认 '/code-finder/api'（POST .../search 与 .../sourcemap）。 */
   path?: string
 }
 
@@ -74,8 +78,14 @@ export function resolveHostConfig(config?: CodeFinderHostConfig): ResolvedCodeFi
   }
 }
 
+/** 按 req.url 后缀分发：/sourcemap → 反查处理器，其余（含 /search 与裸前缀）→ 搜索处理器。 */
+function isSourcemapRequest(req: CodeFinderHttpRequest): boolean {
+  const url = req.url?.split('?')[0] ?? ''
+  return url.endsWith('/sourcemap')
+}
+
 /**
- * 插件主体：建源码索引 + 注册 fenced 搜索路由。索引挂在 ctx.effect 里，
+ * 插件主体：建源码索引 + 注册 fenced 搜索/反查路由。索引挂在 ctx.effect 里，
  * fiber 释放（插件卸载 / HMR）时 dispose。
  */
 export function apply(ctx: CodeFinderHostContext, config?: CodeFinderHostConfig): void {
@@ -97,10 +107,15 @@ export function apply(ctx: CodeFinderHostContext, config?: CodeFinderHostConfig)
     ctx.webServer.register({
       kind: 'prefix',
       path: resolved.path,
-      handler: (req, res) => handleSearchRequest(req, res, index, { isTrusted: fence }),
+      handler: (req, res) => {
+        if (isSourcemapRequest(req)) {
+          return handleSourcemapRequest(req, res, { isTrusted: fence, roots: resolved.roots })
+        }
+        return handleSearchRequest(req, res, index, { isTrusted: fence })
+      },
     })
     return () => index.dispose()
-  }, 'dsh-code-finder: source index + search route')
+  }, 'dsh-code-finder: source index + search/sourcemap routes')
 }
 
 /**

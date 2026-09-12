@@ -12,3 +12,6 @@ docs/plans
 
 # 个人开发记录（仅本机保留，不入库；开源仓库不展示）
 docs/private/
+
+# 本地代理工具数据（delegations/verify 日志，不入库）
+.dsh/

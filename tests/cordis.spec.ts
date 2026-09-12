@@ -36,14 +36,14 @@ function makeHostCtx(trustedHosts: string[] = []): FakeHostCtx {
   return { ctx, route: () => route, dispose: () => disposer?.() }
 }
 
-function makeRequest(options: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): CodeFinderHttpRequest {
+function makeRequest(options: { method?: string; url?: string; body?: unknown; headers?: Record<string, string> } = {}): CodeFinderHttpRequest {
   const chunks: Uint8Array[] = []
   if (options.body !== undefined) {
     chunks.push(new TextEncoder().encode(JSON.stringify(options.body)))
   }
   return {
     method: options.method ?? 'POST',
-    url: '/code-finder/api/search',
+    url: options.url ?? '/code-finder/api/search',
     headers: options.headers ?? { host: 'localhost:5147' },
     [Symbol.asyncIterator]: async function* () {
       for (const chunk of chunks) yield chunk
@@ -93,6 +93,35 @@ afterEach(() => {
 })
 
 const HOST_CONFIG: CodeFinderHostConfig = { roots: [], exts: ['.tsx', '.ts'], exclude: ['node_modules'] }
+
+// ── sourcemap fixture 用的小型 VLQ 编码器（与 sourcemap.spec.ts 同款）───────
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+function encodeVlq(value: number): string {
+  let v = value < 0 ? ((-value) << 1) | 1 : value << 1
+  let out = ''
+  do {
+    let digit = v & 31
+    v >>>= 5
+    if (v > 0) digit |= 32
+    out += BASE64[digit]
+  } while (v > 0)
+  return out
+}
+
+function encodeMappings(rows: number[][][]): string {
+  let srcIdx = 0
+  let origLine = 0
+  let origCol = 0
+  return rows.map(row => row.map(fields => {
+    if (fields.length >= 4) {
+      srcIdx += fields[1] ?? 0
+      origLine += fields[2] ?? 0
+      origCol += fields[3] ?? 0
+    }
+    return fields.map(encodeVlq).join('')
+  }).join(',')).join(';')
+}
 
 describe('host 半：/code-finder/api/search 路由', () => {
   it('注册 prefix 路由并按 roots 建索引', async () => {
@@ -158,7 +187,7 @@ describe('host 半：/code-finder/api/search 路由', () => {
 
   it('非 POST → 405；非法 name → 400', async () => {
     writeSource('src/A.tsx', 'export function Foo() { return <div/> }\n')
-    const { ctx, route } = makeHostCtx()
+    const { ctx, route, dispose } = makeHostCtx()
     applyHost(ctx, { ...HOST_CONFIG, roots: [tmpRoot] })
 
     const get = makeResponse()
@@ -170,6 +199,40 @@ describe('host 半：/code-finder/api/search 路由', () => {
       await route()!.handler(makeRequest({ body: { name: bad } }), res.res)
       expect(res.status).toBe(400)
     }
+    dispose()
+  })
+
+  it('/code-finder/api/sourcemap 路由：产物坐标反查为当前 roots 下的 src 坐标', async () => {
+    // tsc 两段式产物的最小形状：lib/types/Card.js + 同级 .js.map（sources 相对 map）
+    writeSource('src/components/Card.tsx', 'export function Card() { return <div/> }\n')
+    const js = writeSource('lib/types/components/Card.js', '// generated\n')
+    writeFileSync(`${js}.map`, JSON.stringify({
+      version: 3,
+      sources: ['../../../../src/components/Card.tsx'],
+      mappings: encodeMappings([[[0, 0, 0, 0]]]),
+    }))
+    const { ctx, route, dispose } = makeHostCtx()
+    applyHost(ctx, { ...HOST_CONFIG, roots: [tmpRoot] })
+
+    const response = makeResponse()
+    await route()!.handler(makeRequest({
+      url: '/code-finder/api/sourcemap',
+      body: { path: js, line: 1, column: 3 },
+    }), response.res)
+    expect(response.status).toBe(200)
+    const payload = JSON.parse(response.body) as { ok: boolean; data: { path: string; line: number; column: number } }
+    expect(payload.ok).toBe(true)
+    expect(payload.data.path).toBe(join(tmpRoot, 'src/components/Card.tsx'))
+    expect(payload.data.line).toBe(1)
+    // 反查路由同样受 fence 保护
+    const denied = makeResponse()
+    await route()!.handler(makeRequest({
+      url: '/code-finder/api/sourcemap',
+      headers: { host: 'evil.example.com' },
+      body: { path: js, line: 1, column: 3 },
+    }), denied.res)
+    expect(denied.status).toBe(403)
+    dispose()
   })
 })
 
@@ -181,7 +244,10 @@ describe('client 半：dev 自动 setupCodeFinder', () => {
       effect: (callback) => { disposer = callback() ?? undefined },
     }
     applyClient(ctx)
-    expect(setupMock).toHaveBeenCalledWith({ searchEndpoint: '/code-finder/api/search' })
+    expect(setupMock).toHaveBeenCalledWith({
+      searchEndpoint: '/code-finder/api/search',
+      sourcemapEndpoint: '/code-finder/api/sourcemap',
+    })
     disposer?.()
     expect(setupMock.mock.results[0]?.value.destroy).toHaveBeenCalled()
   })

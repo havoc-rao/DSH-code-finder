@@ -19,16 +19,30 @@
 # Opt+Shift hover overlay).
 #
 # Roots: the host half's layer-4 name search falls back to the core defaults
-# (~/.dsh/source/current + <cwd>/src), which rarely match the profile's UI
-# layout. Override per profile by appending to that profile's own
-# cordis.patch.yml:
+# (~/.dsh/source/current + <host cwd>/src) when the profile carries NO roots
+# override at all — the override is a FULL REPLACEMENT, never a merge, so a
+# configured list must spell out every root you want searched. Manage per
+# profile with dcf's own CLI (idempotent, seeds the two defaults on first
+# add):
 #
-#   - overrides:
-#       dsh-code-finder:
-#         config:
-#           roots:
-#             - !!js process.cwd()
-#             - /absolute/path/to/plugin/UI/src
+#   dcf roots add web /abs/path/to/plugin/UI/src
+#   dcf roots list web
+#   dcf roots remove web /abs/path/to/plugin/UI/src
+#
+#   dcf ensure /abs/path/to/plugin --profile web          # 一站式：接线 + roots + build:dev + 宿主验证
+#   dcf status --cwd /abs/path/to/plugin --profile web    # 重启宿主后的端到端复检（见上文注）
+#
+# or write the id-targeted patch entry directly in that profile's
+# cordis.patch.yml (the profile patch layer is a list of Loader patch
+# entries keyed by row id — `- overrides:` wrapping is NOT recognized by
+# the Loader and is skipped with a boot warning):
+#
+#   - id: dsh-code-finder
+#     config:
+#       roots:
+#         - /Users/<you>/.dsh/source/current   # default #1; write it home-expanded (`~` is not expanded)
+#         - !!js "process.cwd() + '/src'"      # default #2; dynamic, follows the host's cwd
+#         - /absolute/path/to/plugin/UI/src
 #
 # Precision note: data-locatorjs build-time injection (bundler plugins
 # `@havocrao/dsh-code-finder/tsdown` / `/vite`) still needs one line in the
