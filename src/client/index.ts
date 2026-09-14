@@ -4,11 +4,15 @@
  * - **幂等单例**：重复调用先 destroy 旧的（HMR 友好）；
  * - **热键捕获**：keydown/keyup 记录按住状态；IME 组合输入、输入框内不触发
  *   （复用 better-sidebar ime-guard 的判定思路）；
+ * - **命中层**：热键按住时挂一张全屏透明层接管指针事件，事件落点用
+ *   `document.elementFromPoint` 反查真实元素。disabled 表单控件不派发 `click`
+ *   （Chrome 实测 `mousedown`/`mouseup` 也没有），父级捕获监听同样收不到——
+ *   不盖层就永远点不到 disabled 按钮的 path；
  * - **mousemove** 按住热键 → 解析链 ①②③ → overlay.show；④ 源码搜索 / ⑤
  *   sourcemap 反查异步补位；
  * - **click** 按住热键 → 阻止默认行为 → `onClick(hit)`（默认复制
  *   `path:line`，无路径时复制组件名）；
- * - **destroy()** 解绑全部监听并移除 overlay。
+ * - **destroy()** 解绑全部监听、撤掉命中层并移除 overlay。
  *
  * 生产防护：`isProductionRuntime()` 命中时返回空操作句柄（调用方按环境懒加载
  * 才是正解，这里是双保险）。本模块零框架依赖，不 import react。
@@ -63,6 +67,12 @@ interface MappedPosition {
 
 /** 搜索缓存 TTL（ms）：同名组件短时间内不重复请求。 */
 const SEARCH_CACHE_TTL_MS = 30_000
+
+/**
+ * 命中层 z-index：低于 overlay 边框宿主（overlay.ts 的 2147482999）——
+ * 蓝框要显示在层之上；只要高于页面内容即可接管指针事件。
+ */
+const PICK_LAYER_Z_INDEX = 2147482998
 
 let active: { destroy(): void } | null = null
 
@@ -155,6 +165,58 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
     sourcemapController?.abort()
     sourcemapController = null
     overlay.hide()
+  }
+
+  /**
+   * 命中层：disabled 表单控件是「事件黑洞」——Chrome/Edge/Safari 不对它派发
+   * `click`（Chrome 实测 `mousedown`/`mouseup` 同样没有），而且**父级上的捕获
+   * 监听也收不到**（Firefox 例外），所以「按住热键点 disabled 按钮」拿不到
+   * path。热键激活期间盖一张全屏透明层把所有指针事件收过来，事件真正落在哪个
+   * 元素上改用 `document.elementFromPoint` 按坐标反查：disabled 只影响事件派发，
+   * 不影响 hit test，disabled 按钮照样能查到。
+   * 层只在热键按住时存在，不改变页面常态；destroy/失焦都会撤掉。
+   */
+  let pickLayer: HTMLDivElement | null = null
+
+  const mountPickLayer = (): void => {
+    if (destroyed) return
+    // 宿主可能整体替换 body（或测试里 innerHTML=''），旧层脱离文档即视为无层。
+    if (pickLayer !== null && !pickLayer.isConnected) pickLayer = null
+    if (pickLayer !== null) return
+    const layer = document.createElement('div')
+    layer.setAttribute('data-dsh-code-finder-layer', '')
+    layer.style.cssText = `position: fixed; inset: 0; z-index: ${PICK_LAYER_Z_INDEX};`
+      + ' pointer-events: auto; cursor: crosshair; background: transparent;'
+    pickLayer = layer
+    document.body.appendChild(layer)
+  }
+
+  const unmountPickLayer = (): void => {
+    if (pickLayer === null) return
+    pickLayer.remove()
+    pickLayer = null
+  }
+
+  /** 按键状态 → 命中层挂载状态（幂等）。 */
+  const syncPickLayer = (): void => {
+    if (hotkeysActive()) mountPickLayer()
+    else unmountPickLayer()
+  }
+
+  /** 事件落点 → 真实元素：落在命中层上就按坐标反查，其余情况用事件自带 target。 */
+  const resolveEventElement = (event: MouseEvent): Element | null => {
+    const target = event.target
+    if (!(target instanceof Element)) return null
+    const layer = pickLayer
+    if (layer === null || target !== layer) return target
+    if (typeof document.elementFromPoint !== 'function') return null
+    layer.style.pointerEvents = 'none' // 反查前先让开，否则查回来的是层自己
+    try {
+      const found = document.elementFromPoint(event.clientX, event.clientY)
+      return found instanceof Element ? found : null
+    } finally {
+      layer.style.pointerEvents = 'auto'
+    }
   }
 
   const applyCandidate = (hit: CodeFinderHit, candidates: SearchCandidate[]): CodeFinderHit => {
@@ -271,6 +333,7 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
     composing = event.isComposing === true
     if (event.key === 'Escape') hide()
     else if (!hotkeysActive()) hide()
+    syncPickLayer()
   }
 
   const onKeyUp = (event: KeyboardEvent): void => {
@@ -279,16 +342,33 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
     keys.meta = event.metaKey
     keys.ctrl = event.ctrlKey
     if (!hotkeysActive()) hide()
+    syncPickLayer()
+  }
+
+  /**
+   * 失焦（切窗口/切标签）时 keyup 可能永远不来：不清状态的话命中层会一直盖着
+   * 页面把交互全吃掉。失焦即视为松开热键。
+   */
+  const onBlur = (): void => {
+    keys.alt = false
+    keys.shift = false
+    keys.meta = false
+    keys.ctrl = false
+    composing = false
+    hide()
+    syncPickLayer()
   }
 
   const onMouseMove = (event: MouseEvent): void => {
     if (destroyed) return
-    if (!hotkeysActive() || composing || isEditableTarget(event.target)) {
+    if (!hotkeysActive() || composing) {
       hide()
       return
     }
-    const target = event.target
-    if (!(target instanceof Element)) {
+    // 命中层接管时 event.target 是层本身，真正的元素要按坐标反查
+    // （disabled 控件的事件会被浏览器吞掉，只能这样绕开）。
+    const target = resolveEventElement(event)
+    if (target === null || isEditableTarget(target)) {
       hide()
       return
     }
@@ -323,11 +403,13 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
   }
 
   const onClick = (event: MouseEvent): void => {
-    if (!hotkeysActive() || composing || isEditableTarget(event.target)) return
+    if (!hotkeysActive() || composing) return
+    // 命中层接管时 event.target 是层本身，真正的元素要按坐标反查。
+    const target = resolveEventElement(event)
+    if (target === null || isEditableTarget(target)) return
     // 用当前命中的 hit（mousemove 已解析）；事件目标不一致时重新解析一次。
     let hit = lastHit
-    const target = event.target
-    if (target instanceof Element && target !== lastElement) {
+    if (target !== lastElement) {
       const fiber = findFiberByDomNode(target)
       const componentFiber = fiber === null ? null : findComponentFiber(fiber)
       hit = resolveHit(target, componentFiber)
@@ -364,6 +446,7 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
 
   window.addEventListener('keydown', onKeyDown, true)
   window.addEventListener('keyup', onKeyUp, true)
+  window.addEventListener('blur', onBlur)
   document.addEventListener('mousemove', onMouseMove, true)
   document.addEventListener('click', onClick, true)
   document.addEventListener('compositionstart', onCompositionStart, true)
@@ -381,11 +464,13 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
       destroyed = true
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('keyup', onKeyUp, true)
+      window.removeEventListener('blur', onBlur)
       document.removeEventListener('mousemove', onMouseMove, true)
       document.removeEventListener('click', onClick, true)
       document.removeEventListener('compositionstart', onCompositionStart, true)
       document.removeEventListener('compositionend', onCompositionEnd, true)
       hide()
+      unmountPickLayer()
       overlay.destroy()
       if (active === handle) active = null
     },

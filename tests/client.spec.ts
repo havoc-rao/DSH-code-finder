@@ -39,6 +39,29 @@ function overlayHost(): HTMLElement | null {
   return document.querySelector<HTMLElement>('div[style*="2147482999"]')
 }
 
+/** 命中层（热键按住时接管指针事件的全屏透明层）。 */
+function pickLayer(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-dsh-code-finder-layer]')
+}
+
+/** 命中层落点反查的桩：真实浏览器里由 document.elementFromPoint 给出坐标下的元素。 */
+function stubElementFromPoint(element: Element | null): void {
+  Object.defineProperty(document, 'elementFromPoint', {
+    value: vi.fn(() => element),
+    configurable: true,
+    writable: true,
+  })
+}
+
+/** 在命中层上模拟真实指针事件（target 是层本身，坐标反查才是真实元素）。 */
+function pointerOnLayer(type: string, x = 50, y = 50): MouseEvent {
+  const layer = pickLayer()
+  if (layer === null) throw new Error('pick layer not mounted')
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y })
+  layer.dispatchEvent(event)
+  return event
+}
+
 /** 边框当前是否可见（宿主创建后常驻，可见性才是状态）。 */
 function boxVisible(): boolean {
   return overlayHost()?.shadowRoot?.querySelector('.cf-box')?.classList.contains('visible') ?? false
@@ -59,6 +82,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  delete (document as unknown as Record<string, unknown>).elementFromPoint
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -181,6 +205,65 @@ describe('setupCodeFinder', () => {
     expect(onClick).toHaveBeenCalledOnce()
     expect(onClick.mock.calls[0]?.[0]).toMatchObject({ path: '/abs/src/Sidebar.tsx', line: 42, source: 'data' })
     expect(event.defaultPrevented).toBe(true)
+    handle.destroy()
+  })
+
+  it('热键按住挂载命中层，松开 / 失焦 / destroy 都撤掉', () => {
+    const handle = setupCodeFinder({})
+    expect(pickLayer()).toBeNull()
+
+    pressKeys({ alt: true, shift: true })
+    expect(pickLayer()).not.toBeNull()
+
+    window.dispatchEvent(new KeyboardEvent('keyup', { altKey: false, shiftKey: false }))
+    expect(pickLayer()).toBeNull()
+
+    // 切走窗口时 keyup 可能永远不来：失焦必须撤层，否则全屏层会吃掉整个页面交互
+    pressKeys({ alt: true, shift: true })
+    expect(pickLayer()).not.toBeNull()
+    window.dispatchEvent(new Event('blur'))
+    expect(pickLayer()).toBeNull()
+
+    pressKeys({ alt: true, shift: true })
+    handle.destroy()
+    expect(pickLayer()).toBeNull()
+  })
+
+  it('disabled 按钮（click 被浏览器吞掉）经命中层坐标反查，仍能取到 path 并复制', async () => {
+    // 真实浏览器里的复现：指针停在 disabled button 上时 document 捕获层收不到
+    // click（Chrome 实测连 mousedown/mouseup 都没有），父级监听同样收不到。
+    // 命中层把事件收过来后，用 elementFromPoint 反查回 disabled 按钮本身。
+    const handle = setupCodeFinder({})
+    const button = document.createElement('button')
+    button.disabled = true
+    button.setAttribute('data-locatorjs', '/abs/src/CommitAction.tsx:214:8')
+    mockRect(button)
+    document.body.appendChild(button)
+
+    pressKeys({ alt: true, shift: true })
+    stubElementFromPoint(button)
+
+    pointerOnLayer('mousemove')
+    expect(boxVisible()).toBe(true)
+    const label = overlayHost()!.shadowRoot!.querySelector('.cf-label')!
+    expect(label.textContent).toContain('/abs/src/CommitAction.tsx:214')
+
+    pointerOnLayer('click')
+    await flush()
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/abs/src/CommitAction.tsx:214')
+    handle.destroy()
+  })
+
+  it('命中层反查到输入框时不触发（isEditableTarget 判定的是真实元素）', () => {
+    const handle = setupCodeFinder({})
+    const input = document.createElement('input')
+    mockRect(input)
+    document.body.appendChild(input)
+
+    pressKeys({ alt: true, shift: true })
+    stubElementFromPoint(input)
+    pointerOnLayer('mousemove')
+    expect(boxVisible()).toBe(false)
     handle.destroy()
   })
 

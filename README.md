@@ -4,6 +4,10 @@ Dev-only **React 组件 → 源码定位**工具：按住 **Opt+Shift**（`Alt+S
 任意 React 组件，overlay 显示组件名与 `文件:行:列`；点击即可打开源码
 （IDE / 侧边栏编辑器 / 复制路径，动作可插拔）。
 
+> **disabled 控件同样能定位**：disabled 表单控件不派发 `click`（Chrome/Edge/Safari
+> 连父级的捕获监听也收不到），按住热键时会临时挂一张透明**命中层**接管指针事件、
+> 按坐标用 `elementFromPoint` 反查真实元素——灰掉的按钮一样能悬停取 path 并点击。
+
 独立 npm 包，插入即用：
 
 - **任意 React 项目**：vite / tsdown 构建插件（dev-only 注入）+ 一行 runtime；
