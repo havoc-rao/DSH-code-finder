@@ -13,8 +13,8 @@
  *
  * 组件名始终从 fiber 提取（属性里只有路径没有名字），与位置合并成完整 hit。
  */
-import { getComponentName, getDebugSource, type FiberDebugSource, type FiberLike } from './fiber'
-import { lookupComponentNameByPosition, lookupLocatorData } from './locator-data'
+import { collectFiberChain, getComponentName, getDebugSource, type ChainNode, type FiberDebugSource, type FiberLike } from './fiber'
+import { componentChainByPosition, lookupComponentNameByPosition, lookupLocatorData } from './locator-data'
 
 /** hit 的来源：①②③④⑤（④⑤ 由 index.ts 异步补位）。 */
 export type HitSource = 'data' | 'fiber' | 'search' | 'sourcemap' | 'name-only'
@@ -22,6 +22,8 @@ export type HitSource = 'data' | 'fiber' | 'search' | 'sourcemap' | 'name-only'
 export interface CodeFinderHit {
   /** 组件名（fiber 提取；没有时为空字符串）。 */
   name: string
+  /** 完整组件路径 `[最外层, …, 最内层包裹组件]`（每层含组件声明位置；无链时不带）。 */
+  chain?: ChainNode[]
   /** 文件绝对/相对路径。 */
   path?: string
   line?: number
@@ -60,6 +62,36 @@ export function isBuildArtifactPath(path: string): boolean {
   return /\.(?:[mc]?js)$/u.test(path) && !/[\\/]src[\\/]/u.test(path)
 }
 
+/**
+ * 沿 DOM 祖先找「最近一个带构建期注入属性（data-locatorjs / data-locatorjs-id）
+ * 的元素」（含自身）。
+ *
+ * 为什么需要：注入属性只存在于该 JSX 元素本体上，其内部子元素（文本节点、
+ * `<span>` 等）没有属性。生产 React 宿主没有 fiber 键（无
+ * `_debugSource`、无组件名）时，hover 内部元素会直接落到「连名字都没有 →
+ * overlay 隐藏」。上溯到最近注入祖先后，生产宿主下 hover 组件任意内部元素
+ * 都能拿到该 JSX 元素的元素级坐标（蓝框框住注入祖先，与 LocatorJS 扩展行为
+ * 一致）；dev React 宿主下 fiber 本就能给出位置，上溯只改变框选范围（更大
+ * 的注入边界，同样是预期行为）。
+ *
+ * @param element - hover 目标元素。
+ * @param maxDepth - 上溯深度上限（防御异常 DOM 深度；默认 64 足够覆盖
+ *   嵌套组件栈，同时防止病态 DOM 的线性开销）。
+ * @returns 带属性的最近祖先（含自身）；找不到返回 null。
+ */
+export function findLocatorElement(element: Element, maxDepth = 64): Element | null {
+  let current: Element | null = element
+  let depth = 0
+  while (current !== null && depth < maxDepth) {
+    if (current.hasAttribute('data-locatorjs') || current.hasAttribute('data-locatorjs-id')) {
+      return current
+    }
+    current = current.parentElement
+    depth += 1
+  }
+  return null
+}
+
 function hitFromDebugSource(name: string, source: FiberDebugSource): CodeFinderHit {
   const path = source.fileName
   return {
@@ -78,6 +110,9 @@ function hitFromDebugSource(name: string, source: FiberDebugSource): CodeFinderH
  */
 export function resolveHit(element: Element, fiber: FiberLike | null): CodeFinderHit | null {
   const name = fiber === null ? '' : (getComponentName(fiber) ?? '')
+  // 渲染树链（dev React 的 _debugOwner 上溯，跨文件真实组件树；生产宿主无
+  // fiber 数据 → undefined）。链长 >1 时优先于注册表声明链显示。
+  const renderChain = fiber === null ? undefined : collectFiberChain(fiber)
 
   // ① 构建期注入的属性（应用自己构建的组件，元素级精确）
   const pathAttr = element.getAttribute('data-locatorjs')
@@ -87,10 +122,17 @@ export function resolveHit(element: Element, fiber: FiberLike | null): CodeFinde
       // 生产 React 下 fiber 组件名被压缩（`af`），用注册表按位置反查「包裹组件
       // 名」覆盖——data-locatorjs 是 path 格式（无表达式 id），按位置匹配，再沿
       // wrappingComponentId → components 链上溯到最外层组件（hover 内部元素也
-      // 显示 `<Sidebar>` 而非 `<button>`）。
+      // 显示 `<Sidebar>` 而非 `<button>`）。完整链（多层组件 path）随 chain 返回。
       const registryName = lookupComponentNameByPosition(parsed.path, parsed.line, parsed.column)
+      const declarationChain = componentChainByPosition(parsed.path, parsed.line, parsed.column)
+      // 渲染树链只在「>1 层且带位置」时优先：production React 无 _debugSource，
+      // 沿 return 链兜底出的裸名链（压缩名、无 loc）不压制带位置的声明链。
+      const renderChainLocated = renderChain !== undefined && renderChain.length > 1
+        && renderChain.some(node => node.path !== undefined)
+      const chain = renderChainLocated ? renderChain : declarationChain
       return {
         name: registryName ?? name,
+        ...(chain !== undefined && chain.length > 1 ? { chain } : {}),
         path: parsed.path,
         line: parsed.line,
         column: parsed.column,
@@ -102,17 +144,29 @@ export function resolveHit(element: Element, fiber: FiberLike | null): CodeFinde
   if (idAttr !== null) {
     const located = lookupLocatorData(idAttr)
     if (located !== undefined) {
-      return { name: located.name ?? name, path: located.path, line: located.line, column: located.column, source: 'data' }
+      const chain = renderChain !== undefined && renderChain.length > 1 ? renderChain : located.chain
+      return {
+        name: located.name ?? name,
+        ...(chain !== undefined && chain.length > 1 ? { chain } : {}),
+        path: located.path, line: located.line, column: located.column, source: 'data',
+      }
     }
   }
 
   // ② fiber._debugSource（dev React 宿主）
   if (fiber !== null) {
     const debugSource = getDebugSource(fiber)
-    if (debugSource !== undefined) return hitFromDebugSource(name, debugSource)
+    if (debugSource !== undefined) {
+      const hit = hitFromDebugSource(name, debugSource)
+      return renderChain !== undefined && renderChain.length > 1 ? { ...hit, chain: renderChain } : hit
+    }
   }
 
   // ③ 组件名兜底（生产宿主：名字级是预期行为）
-  if (name !== '') return { name, source: 'name-only' }
+  if (name !== '') {
+    return renderChain !== undefined && renderChain.length > 1
+      ? { name, chain: renderChain, source: 'name-only' }
+      : { name, source: 'name-only' }
+  }
   return null
 }

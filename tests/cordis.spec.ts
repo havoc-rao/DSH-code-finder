@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply as applyHost, type CodeFinderHostConfig, type CodeFinderHostContext } from '../src/cordis/host'
+import { apply as applyHost, resolveHostConfig, type CodeFinderHostConfig, type CodeFinderHostContext } from '../src/cordis/host'
 import type { CodeFinderHttpRequest, CodeFinderHttpResponse } from '../src/index'
 
 // ── client 半：mock 掉 setupCodeFinder，只验证开关与生命周期 ──────────────────
@@ -14,7 +14,7 @@ vi.mock('../src/client/index', () => ({
   setupCodeFinder: vi.fn(() => ({ destroy: vi.fn() })),
 }))
 import { setupCodeFinder } from '../src/client/index'
-import { apply as applyClient, type CodeFinderClientContext } from '../src/cordis/client'
+import { apply as applyClient, parseClientHotkeys, type CodeFinderClientContext } from '../src/cordis/client'
 
 const setupMock = vi.mocked(setupCodeFinder)
 
@@ -90,6 +90,7 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true })
   vi.unstubAllEnvs()
   delete document.documentElement.dataset.codeFinder
+  delete document.documentElement.dataset.codeFinderHotkeys
 })
 
 const HOST_CONFIG: CodeFinderHostConfig = { roots: [], exts: ['.tsx', '.ts'], exclude: ['node_modules'] }
@@ -124,6 +125,46 @@ function encodeMappings(rows: number[][][]): string {
 }
 
 describe('host 半：/code-finder/api/search 路由', () => {
+  it('默认 roots：monorepo 布局（cwd/packages、cwd/apps）自动补位并命中（harness 型布局 e2e）', async () => {
+    // deepseek-harness 型布局：源码全在 packages/<name>/src 下，cwd/src 不存在。
+    writeSource('packages/client/ui-conversation/src/input/ReferenceChip.tsx',
+      'export function ReferenceChip() { return <span/> }\n')
+    writeSource('apps/web/src/App.tsx', 'export function App() { return <div/> }\n')
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tmpRoot)
+    try {
+      const { ctx, route, dispose } = makeHostCtx()
+      applyHost(ctx) // 无 config → 走 defaultRoots()
+      const response = makeResponse()
+      await route()!.handler(makeRequest({ body: { name: 'ReferenceChip' } }), response.res)
+      expect(response.status).toBe(200)
+      const data = (JSON.parse(response.body) as { data: Array<{ file: string; line: number }> }).data
+      expect(data.some(d => d.file.includes('packages/client/ui-conversation/src/input/ReferenceChip.tsx'))).toBe(true)
+      const appResponse = makeResponse()
+      await route()!.handler(makeRequest({ body: { name: 'App' } }), appResponse.res)
+      const appData = (JSON.parse(appResponse.body) as { data: Array<{ file: string }> }).data
+      expect(appData.some(d => d.file.includes('apps/web/src/App.tsx'))).toBe(true)
+      dispose()
+    } finally {
+      cwdSpy.mockRestore()
+    }
+  })
+
+  it('resolveHostConfig 默认 roots：目录存在才加入 packages/apps，~/.dsh 与 cwd/src 恒定在场', () => {
+    mkdirSync(join(tmpRoot, 'packages'), { recursive: true })
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tmpRoot)
+    try {
+      const resolved = resolveHostConfig()
+      expect(resolved.roots).toContain(join(tmpRoot, 'src'))
+      expect(resolved.roots).toContain(join(tmpRoot, 'packages'))
+      expect(resolved.roots).not.toContain(join(tmpRoot, 'apps'))
+      // 显式配置仍是完全替换（默认 roots 不再并入）
+      const explicit = resolveHostConfig({ roots: [join(tmpRoot, 'custom')] })
+      expect(explicit.roots).toEqual([join(tmpRoot, 'custom')])
+    } finally {
+      cwdSpy.mockRestore()
+    }
+  })
+
   it('注册 prefix 路由并按 roots 建索引', async () => {
     writeSource('src/components/Sidebar.tsx', 'export function Sidebar() { return <div/> }\nconst Toolbar = () => <span/>\n')
     writeSource('src/App.tsx', 'const Sidebar = (props) => <div/>\n')
@@ -260,7 +301,6 @@ describe('client 半：dev 自动 setupCodeFinder', () => {
 
   it('未设 NODE_ENV（非 dev 语义）不启用——空壳 overlay 不存在', () => {
     vi.stubEnv('NODE_ENV', '')
-    vi.stubEnv('CODE_FINDER', '')
     applyClient({ effect: () => undefined })
     expect(setupMock).not.toHaveBeenCalled()
   })
@@ -270,5 +310,40 @@ describe('client 半：dev 自动 setupCodeFinder', () => {
     document.documentElement.dataset.codeFinder = 'off'
     applyClient({ effect: () => undefined })
     expect(setupMock).not.toHaveBeenCalled()
+  })
+
+  it('data-code-finder-hotkeys 逃生门：换热键 / 关热键 / 非法值回落默认', () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    document.documentElement.dataset.codeFinderHotkeys = 'cmd+shift'
+    applyClient({ effect: () => undefined })
+    expect(setupMock).toHaveBeenCalledWith(
+      expect.objectContaining({ hotkeys: 'cmd+shift' }),
+    )
+    setupMock.mockClear()
+    document.documentElement.dataset.codeFinderHotkeys = 'off'
+    applyClient({ effect: () => undefined })
+    expect(setupMock).toHaveBeenCalledWith(
+      expect.objectContaining({ hotkeys: null }),
+    )
+    setupMock.mockClear()
+    document.documentElement.dataset.codeFinderHotkeys = 'bogus'
+    applyClient({ effect: () => undefined })
+    expect(setupMock).toHaveBeenCalledWith(
+      expect.objectContaining({ hotkeys: undefined }),
+    )
+  })
+
+  it('parseClientHotkeys：undefined/空 → undefined；off/null/false → null；非法值 → undefined', () => {
+    expect(parseClientHotkeys(undefined)).toBeUndefined()
+    expect(parseClientHotkeys('')).toBeUndefined()
+    expect(parseClientHotkeys('  ')).toBeUndefined()
+    expect(parseClientHotkeys('off')).toBeNull()
+    expect(parseClientHotkeys('null')).toBeNull()
+    expect(parseClientHotkeys('FALSE')).toBeNull()
+    expect(parseClientHotkeys('alt')).toBe('alt')
+    expect(parseClientHotkeys('alt+shift')).toBe('alt+shift')
+    expect(parseClientHotkeys('cmd+shift')).toBe('cmd+shift')
+    expect(parseClientHotkeys('Alt+Shift')).toBe('alt+shift')
+    expect(parseClientHotkeys('shift')).toBeUndefined()
   })
 })

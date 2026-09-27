@@ -72,7 +72,6 @@ const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0)
 beforeEach(() => {
   // runtime 严格 dev 语义：只有 NODE_ENV=development 才启用（vitest 默认是 test）
   vi.stubEnv('NODE_ENV', 'development')
-  vi.stubEnv('CODE_FINDER', '')
   document.body.innerHTML = ''
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -174,7 +173,7 @@ describe('setupCodeFinder', () => {
     handle.destroy()
   })
 
-  it('click 默认动作：复制 path:line 并 toast', async () => {
+  it('click 默认动作：复制 path:line（无列）并 toast', async () => {
     const handle = setupCodeFinder({})
     const el = document.createElement('div')
     el.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
@@ -189,6 +188,41 @@ describe('setupCodeFinder', () => {
     const toast = overlayHost()!.shadowRoot!.querySelector('.cf-toast')
     expect(toast!.textContent).toContain('已复制')
     handle.destroy()
+  })
+
+  it('click 复制带父组件链（chain 长度 >1 时，`<链> path:line`，无列）', async () => {
+    // 注册表形状与 resolve.spec ①f2 一致：表达式经 wrappingComponentId 指向
+    // components 链（最外层 → 最内层；本例 App › Sidebar 两层包裹，各带
+    // 组件声明 loc——复制时每层输出 `Name (path:line)`）。
+    ;(window as unknown as { __LOCATOR_DATA__: Record<string, unknown> }).__LOCATOR_DATA__ = {
+      '/abs/src/Sidebar.tsx': {
+        filePath: '/abs/src/Sidebar.tsx',
+        projectPath: '/abs',
+        expressions: {
+          '0': { name: 'button', loc: { start: { line: 42, column: 10 }, end: { line: 42, column: 30 } }, wrappingComponentId: 2 },
+        },
+        components: {
+          '0': { name: 'App', loc: { start: { line: 5, column: 1 }, end: { line: 5, column: 20 } } },
+          '2': { name: 'Sidebar', loc: { start: { line: 30, column: 2 }, end: { line: 30, column: 30 } }, wrappingComponentId: 0 },
+        },
+        styledDefinitions: {},
+      },
+    }
+    const handle = setupCodeFinder({})
+    const el = document.createElement('div')
+    el.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
+    mockRect(el)
+    document.body.appendChild(el)
+
+    pressKeys({ alt: true, shift: true })
+    hover(el)
+    click(el)
+    await flush()
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      '<App (/abs/src/Sidebar.tsx:5) › Sidebar (/abs/src/Sidebar.tsx:30)> /abs/src/Sidebar.tsx:42',
+    )
+    handle.destroy()
+    delete (window as unknown as { __LOCATOR_DATA__?: unknown }).__LOCATOR_DATA__
   })
 
   it('onClick 覆盖默认动作，且阻止默认行为', () => {
@@ -333,6 +367,63 @@ describe('setupCodeFinder', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     handle.destroy()
     vi.unstubAllGlobals()
+  })
+
+  it('hover 注入元素的内部子元素：上溯最近注入祖先显示 path（prod 宿主无 fiber 也能定位）', () => {
+    const handle = setupCodeFinder({})
+    // 生产 React 宿主：无 fiber key、无 DevTools hook——resolve 只能靠注入属性。
+    const root = document.createElement('div')
+    root.setAttribute('data-locatorjs', '/abs/src/CommitAction.tsx:214:8')
+    mockRect(root)
+    const mid = document.createElement('section')
+    const leaf = document.createElement('span')
+    leaf.textContent = '内部文本'
+    mid.appendChild(leaf)
+    root.appendChild(mid)
+    mid.getBoundingClientRect = root.getBoundingClientRect
+    leaf.getBoundingClientRect = root.getBoundingClientRect
+    document.body.appendChild(root)
+
+    pressKeys({ alt: true, shift: true })
+    hover(leaf)
+    expect(boxVisible()).toBe(true)
+    const label = overlayHost()!.shadowRoot!.querySelector('.cf-label')!
+    expect(label.textContent).toContain('/abs/src/CommitAction.tsx:214')
+    // 蓝框框住的是注入祖先（其 rect 被 mock 成可见）——overlay 宿主 box 尺寸
+    // 断言以 root 为基准即可（不直接断言像素）。
+    handle.destroy()
+  })
+
+  it('click 落入注入元素的内部子元素：复制的是最近注入祖先的 path', async () => {
+    const onClick = vi.fn()
+    const handle = setupCodeFinder({ onClick })
+    const root = document.createElement('div')
+    root.setAttribute('data-locatorjs', '/abs/src/Sidebar.tsx:42:10')
+    mockRect(root)
+    const leaf = document.createElement('span')
+    root.appendChild(leaf)
+    leaf.getBoundingClientRect = root.getBoundingClientRect
+    document.body.appendChild(root)
+
+    pressKeys({ alt: true, shift: true })
+    click(leaf)
+    expect(onClick).toHaveBeenCalledOnce()
+    expect(onClick.mock.calls[0]?.[0]).toMatchObject({ path: '/abs/src/Sidebar.tsx', line: 42, source: 'data' })
+    handle.destroy()
+  })
+
+  it('hotkeys: null 关闭热键：按住 Alt+Shift 不挂命中层、不显示 overlay', () => {
+    const handle = setupCodeFinder({ hotkeys: null })
+    const el = document.createElement('div')
+    el.setAttribute('data-locatorjs', '/abs/src/A.tsx:1:1')
+    mockRect(el)
+    document.body.appendChild(el)
+
+    pressKeys({ alt: true, shift: true })
+    expect(pickLayer()).toBeNull()
+    hover(el)
+    expect(boxVisible()).toBe(false)
+    handle.destroy()
   })
 
   it('destroy 解绑全部监听并移除 overlay', () => {

@@ -5,14 +5,17 @@
  * a `data-locatorjs` attribute (path format: `<absFile>:<line>:<col>`) plus a
  * `window.__LOCATOR_DATA__` registry entry.
  *
- * Dev-only by default (NODE_ENV=development or CODE_FINDER=1): in production
- * the transform is a no-op returning the original code, so published bundles
- * carry zero locator payload.
+ * Dev-only by default (NODE_ENV=development): in production the transform is
+ * a no-op returning the original code, so published bundles carry zero
+ * locator payload. `options.enabled` is the single override layer — builds
+ * that want payload under production semantics pass `enabled: true`, dev
+ * builds that must stay clean pass `enabled: false`.
  *
  * The injected attributes are plain DOM data — they survive production React
  * (no _debugSource needed), which is exactly the gap the runtime's resolve
  * chain (src/client/resolve.ts) fills for components the app built itself.
  */
+import { isAbsolute, relative } from 'node:path'
 import { createRequire } from 'node:module'
 import { transformAsync } from '@babel/core'
 import babelJsx from '@locator/babel-jsx'
@@ -28,7 +31,7 @@ const require = createRequire(import.meta.url)
 const TYPESCRIPT_PRESET = require.resolve('@babel/preset-typescript')
 
 export interface CodeFinderBuildOptions {
-  /** Force on/off; default: process.env.NODE_ENV === 'development' || CODE_FINDER=1 */
+  /** Force on/off (the only override layer); default: process.env.NODE_ENV === 'development' */
   enabled?: boolean
   /** Extra include filter (tested against the resolved absolute file id). */
   include?: RegExp
@@ -41,22 +44,22 @@ export interface CodeFinderBuildOptions {
 }
 
 /**
- * Whether instrumentation is on for this build. `CODE_FINDER` is the complete
- * master switch: `0`/`off`/`false` forces off (even under a dev build),
- * `1`/`on`/`true` forces on (even under a production build), otherwise follow
- * the build semantics (`NODE_ENV === 'development'`).
+ * Whether instrumentation is on for this build. `NODE_ENV === 'development'`
+ * is the single env semantics (dev semantics → inject; production/unset →
+ * no-op); `enabled` is the only override layer, for builds that want payload
+ * under production semantics or a clean bundle under dev semantics.
  */
 export function codeFinderEnabled(enabled: boolean | undefined): boolean {
   if (enabled !== undefined) return enabled
-  const flag = process.env.CODE_FINDER
-  if (flag === '0' || flag === 'off' || flag === 'false') return false
-  if (flag === '1' || flag === 'on' || flag === 'true') return true
   return process.env.NODE_ENV === 'development'
 }
 
 /** Should this module id be instrumented (own source only)? */
 export function shouldInstrument(id: string, options: CodeFinderBuildOptions): boolean {
   if (id.includes('node_modules')) return false
+  // 打包器虚拟模块（rolldown/rollup 的 \0 前缀惯例，如 \0rolldown/runtime.js）：
+  // 不是物理文件，babel 解析其运行时代码只会把空注册表 IIFE 烙进产物。
+  if (id.startsWith('\0')) return false
   if (!/\.(tsx|jsx|ts|js)$/u.test(id)) return false
   if (options.include && !options.include.test(id)) return false
   if (options.exclude && options.exclude.test(id)) return false
@@ -94,9 +97,16 @@ export async function transformWithCodeFinder(
   if (!codeFinderEnabled(options.enabled)) return null
   if (!shouldInstrument(id, options)) return null
   try {
+    // filename 必须落在 cwd 之下：@locator 与 create-element 都用
+    // `projectPath + filePath` 拼注册表 key（filePath = filename 去 cwd 前缀）。
+    // rolldown/tsdown 从仓库根构建，绝对 id 以 cwd 开头 → 原样；vite 的
+    // root 常是子目录（如 apps/web），绝对 id 不以 cwd 开头 → 相对化，让拼回
+    // 的 key 仍是规范绝对路径（否则会产出 cwd + 绝对路径 的错拼）。
+    const cwd = options.projectRoot ?? process.cwd()
+    const filename = isAbsolute(id) && !id.startsWith(cwd) ? relative(cwd, id) : id
     const result = await transformAsync(code, {
-      filename: id,
-      cwd: options.projectRoot ?? process.cwd(),
+      filename,
+      cwd,
       babelrc: false,
       configFile: false,
       sourceMaps: true,

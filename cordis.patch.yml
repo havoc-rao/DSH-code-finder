@@ -50,12 +50,12 @@
 # but roots-override gives path-level resolution with zero build changes.
 #
 # Strict dev semantics first: same predicate as build-time codeFinderEnabled.
-# Only an explicit dev env mounts — `NODE_ENV === 'development'` (unless
-# CODE_FINDER=1/on/true forces on, or 0/off/false forces off). Unset NODE_ENV
+# Only an explicit dev env mounts — `NODE_ENV === 'development'`. Unset NODE_ENV
 # (undefined) is NOT dev: this row is disabled, and because the dcf-generated
 # mount row (`dsh-code-finder-mount`) shares the predicate, NO entry mounts —
 # no overlay, no /code-finder/api route. A "build with no injection + runtime
-# overlay shell" combination is impossible.
+# overlay shell" combination is impossible (production payload needs an explicit
+# `enabled` on the build side, which is a separate concern from this runtime row).
 #
 # Double-mount guard: a profile that already mounts this package under its own
 # manual row (or an aggregate bundle) would register /code-finder/api twice
@@ -67,4 +67,4 @@
 - insert:
     - id: dsh-code-finder
       name: '@havocrao/dsh-code-finder'
-      disabled: !!js "(process.env.NODE_ENV !== 'development' || ['0','off','false'].includes(process.env.CODE_FINDER)) && !['1','on','true'].includes(process.env.CODE_FINDER) || [...ctx.loader.entries()].some((e) => e.options.name === '@havocrao/dsh-code-finder' && e.options.id !== 'dsh-code-finder' && !e.disabled)"
+      disabled: !!js "process.env.NODE_ENV !== 'development' || [...ctx.loader.entries()].some((e) => e.options.name === '@havocrao/dsh-code-finder' && e.options.id !== 'dsh-code-finder' && !e.disabled)"

@@ -38,6 +38,10 @@ npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + �
 dcf roots list web                      # 列出 web profile 当前覆盖（无覆盖显示默认语义）
 dcf roots add web /abs/path/to/UI/src   # 幂等追加（~ 展开、相对路径按 --cwd 归一化、去重）
 dcf roots remove web /abs/path/to/UI/src
+# roots 补丁按「挂载行 id」定位（默认官方行 dsh-code-finder）；宿主侧自定义
+# 挂载行 id 时（如 deepseek-harness 的 dsh-code-finder-mount，官方行会被其
+# double-mount 守卫禁用）必须指向实际生效行：
+dcf roots add web /abs/path/to/UI/src --entry-id dsh-code-finder-mount
 # 可选: --cwd <dir>  --no-install  --keep-deps  --link <path>  --no-build  --script <name>
 #       --root <path>  --host <url>  --no-host-check  --quiet
 ```
@@ -51,10 +55,19 @@ dcf roots remove web /abs/path/to/UI/src
   `tsdown.config.*`（每个 plugins 数组插 `codeFinderTsdown()`）、
   `cordis.patch.yml`（一行双面插件，缩进随块对齐）；
 - **roots 覆盖是「完全替换」**：profile 里一旦写了 `config.roots`，host 半
-  默认 roots（`~/.dsh/source/current` + 宿主进程 `cwd/src`）不再并入（见
-  `src/cordis/host.ts` 的 `config?.roots ?? defaultRoots()`）。所以
+  默认 roots（`~/.dsh/source/current` + 宿主进程 `cwd/src`，外加 **monorepo
+  布局补位**：`cwd/packages`、`cwd/apps` 存在时自动加入——deepseek-harness
+  型 `packages/client/<name>/src/client/...` 无需配置即可被搜索命中）不再并入
+  （见 `src/cordis/host.ts` 的 `config?.roots ?? defaultRoots()`）。所以
   `dcf roots add` 在**创建新覆盖块时自动播种这两条默认根**（写全语义），
   已有列表只幂等追加；清空后 `dcf roots remove` 会删除整块、恢复默认；
+- **roots 补丁的 id 必须指向实际生效的挂载行**：profile patch 层按
+  `- id: <行 id>` 定位（`applyEntryPatches`，找不到 id 会告警跳过；对**被
+  double-mount 守卫禁用**的行打补丁同样静默无效——config 改了，行不挂载）。
+  官方 bundle 行 id 是 `dsh-code-finder`；聚合层/宿主若用自定义 id 挂载
+  （如 harness 的 `dsh-code-finder-mount`），用 `--entry-id` 指过去：
+  `dcf roots add web <src> --entry-id dsh-code-finder-mount`。`dcf status
+  --profile web` 会在仓库里检测到自定义挂载行时自动给出提示；
 - 接线后仍需 **dev 语义构建**（见「构建期注入生效机制」）才产生注入；
 - `remove` 连带卸载依赖（`--keep-deps` 保留）；手动 `pnpm remove @havocrao/dsh-code-finder`。
 
@@ -188,12 +201,15 @@ DSH 插件的 `cordis.patch.yml` **挂一行**即可——同一 entry 双面：
 > re-export host 半；`.../client` 是 harness-wire bundle），一般用不着显式引用。
 
 - host 半：建源码索引（默认 roots `~/.dsh/source/current` + 当前进程
-  `cwd/src`）+ 注册 `POST /code-finder/api/search` 与 `POST /code-finder/api/sourcemap`
+  `cwd/src` + monorepo 布局补位 `cwd/packages`/`cwd/apps`）+ 注册
+  `POST /code-finder/api/search` 与 `POST /code-finder/api/sourcemap`
   （产物坐标 → 源码坐标的反查，见 src/sourcemap.ts）；自带 loopback 信任 fence，
   只读、只扫配置 roots、拒绝越权；
 - client 半：wire bundle 里按「无 process 即 dev」默认启用
   `setupCodeFinder({ searchEndpoint: '/code-finder/api/search', sourcemapEndpoint: '/code-finder/api/sourcemap' })`；
-  逃生门：`<html data-code-finder="off">` 可完全关闭；
+  逃生门：`<html data-code-finder="off">` 可完全关闭；`<html
+  data-code-finder-hotkeys="cmd+shift|alt|alt+shift|off">` 可换热键/关热键
+  （macOS 输入法切换占用 ⌥⇧ 等场景）；
 - 想给插件自己的组件加**元素级行号**：再在自己的构建里加 B 档的
   `codeFinderTsdown()`（需 `NODE_ENV=development`，见「构建期注入生效机制」）
   ——不加也不影响名字级/搜索级；
@@ -235,7 +251,7 @@ setupCodeFinder({
 开关（`src/build/transform.ts` 的 `codeFinderEnabled`）：
 
 ```ts
-return process.env.NODE_ENV === 'development' || process.env.CODE_FINDER === '1'
+return process.env.NODE_ENV === 'development'   // enabled 参数是唯一覆盖层
 ```
 
 | 构建场景 | 进程的 NODE_ENV | data-locatorjs |
@@ -256,7 +272,9 @@ return process.env.NODE_ENV === 'development' || process.env.CODE_FINDER === '1'
   每次 `pnpm install` 都会用生产语义重新构建并覆盖 dev 产物——install 后
   hover 变无信息，先自查 `grep -c data-locatorjs lib/client.js`（>0 为注入
   在），被覆盖就重跑 dev 构建。
-- **逃生口 `CODE_FINDER=1`**：生产构建想带注入时显式开启（不推荐发布用）。
+- **覆盖层（enabled 参数）**：生产语义构建想带注入时在构建配置显式传
+  `codeFinderTsdown({ enabled: true })`（不推荐发布用）；dev 语义下想保持
+  干净则传 `enabled: false`。env 层只有 `NODE_ENV` 一个语义。
 - **注入 ≠ 定位唯一途径**：无 `data-locatorjs` 时还有 fiber `_debugSource`
   （dev React）→ 组件名 → 第④层 roots 名字搜索兜底；`data-locatorjs` 只是
   让行号最精确。（见下节「宿主 UI 的定位能力」）
@@ -265,21 +283,22 @@ return process.env.NODE_ENV === 'development' || process.env.CODE_FINDER === '1'
 
 | 场景 | 元素级行号 | 组件名 | 搜索命中位置 |
 |---|---|---|---|
-| 应用自己构建（构建期注入，产物即源码） | ✓ `data-locatorjs` | ✓ | 不需要 |
+| 应用自己构建（构建期注入，产物即源码） | ✓ `data-locatorjs`（hover 内部子元素时上溯最近注入祖先，蓝框框住注入边界） | ✓ | 不需要 |
 | 应用自己构建（两段式：tsc → lib → tsdown 打包） | ✓ `data-locatorjs` → ⑤ sourcemap 反查回 `src/**/*.tsx` | ✓ | 不需要 |
 | dev React 宿主（vite dev server） | ✓ fiber `_debugSource` | ✓ | 不需要 |
-| 生产 React 宿主（`react-dom.production.min.js`） | ✗ 不可达 | ✓ 名字级 | ✓ 搜索级 |
+| 生产 React 宿主（`react-dom.production.min.js`） | ✗ 不可达（除非装 React DevTools 扩展拿到 fiber hook） | ✓ 名字级（需 fiber；扩展/注入属性可补） | ✓ 搜索级 |
 
 生产宿主无 `_debugSource`、也无权改宿主构建——**「名字级 + 搜索级」是预期行为，
 不承诺行号**。搜索命中的位置来自 host 半按 roots 扫出的「组件声明名 → file:line」。
 
 两段式构建的行号来源是 ⑤：`data-locatorjs` 注入在 tsdown 打包的 `lib/**/*.js`
 上（坐标即产物坐标），client 半发现命中路径是产物后 POST
-`/code-finder/api/sourcemap`，host 半读取产物旁 `*.js.map`（tsc/tsdown 默认生成；
-sources 相对 map 目录，打包器改写过的浏览器 URL 形式按配置 roots 兜底拼接）
+`/code-finder/api/sourcemap`，host 半读取产物旁 `*.js.map`（tsc 需在插件
+tsconfig 开 `sourceMap`、tsdown 需 `sourcemap: true`；sources 相对 map 目录，
+打包器改写过的浏览器 URL 形式按配置 roots 兜底拼接）
 反查原始坐标——hover 显示 `MessageItem.tsx:219:35` 而非
-`lib/types/client/chat/MessageItem.js:96:297`。无 map（如发布时被 files 过滤）时
-静默回退产物路径，不阻断 hover。
+`lib/types/client/chat/MessageItem.js:96:297`。无 map（未开 sourceMap 或被发布
+files 过滤）时静默回退产物路径，不阻断 hover。
 
 ## be-sider（better-sidebar）case：端到端试用
 
@@ -292,7 +311,7 @@ sources 相对 map 目录，打包器改写过的浏览器 URL 形式按配置 r
 cd ~/Documents/Projects/tools/DSH-code-finder
 pnpm build
 
-# 2) be-sider dev 构建——注入只在 NODE_ENV=development（或 CODE_FINDER=1）时发生
+# 2) be-sider dev 构建——注入只在 NODE_ENV=development 时发生
 cd ~/Documents/Projects/tools/dsh-plugins/DSH-better-sidebar
 NODE_ENV=development pnpm bundle
 grep -c data-locatorjs lib/client.js     # 期望 > 0（元素级注入生效）
@@ -374,7 +393,9 @@ dsh web    # keyless；浏览器打开日志里的 http://127.0.0.1:<port>
   生产构建要继续试用需重跑 dev 构建；
 - 搜索层与第⑤层反查都依赖 **dsh-code-finder host 半**路由在跑（be-sider 不自带
   `/code-finder/api`；`dsh web` 起着 + profile 挂了 host 半）；首次搜索触发懒建
-  索引——`~/.dsh/source/current` 不存在时宿主组件搜不到（插件自己的 src 始终可搜）；
+  索引——`~/.dsh/source/current` 不存在也不影响：monorepo 布局（宿主导入
+  `packages/`、`apps/`）自动补位，其余源码用 `dcf roots add <profile> <src>`
+  覆盖（注意 `--entry-id` 要指向实际生效的挂载行 id）；
 - **两段式构建拿不到源码路径**：`data-locatorjs` 在 tsdown 打包 `lib/types/**/*.js`
   时注入，路径指向产物——第⑤层反查要求宿主机器上**产物旁保留 `*.js.map`**
   （tsc/tsdown 默认生成；发布时被 `files` 过滤掉 map 的包会反查失败，回退显示

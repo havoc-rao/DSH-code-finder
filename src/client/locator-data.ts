@@ -17,6 +17,7 @@
  * 多个接入方（宿主 + 插件）各自注入时按绝对路径隔离、天然不冲突，读取时合并
  * （plan §11）。data-locatorjs-id 的 id 格式为 `<fullPath>::<expressionId>`。
  */
+import type { ChainNode } from './fiber'
 
 export interface LocatorPosition {
   line: number
@@ -32,7 +33,8 @@ export interface LocatorExpression {
   loc?: { start?: LocatorPosition; end?: LocatorPosition }
   start?: LocatorPosition
   end?: LocatorPosition
-  wrappingComponentId?: number
+  /** 包裹组件引用：@locator 的数字下标，或本插件的 `ce-N` key。 */
+  wrappingComponentId?: number | string
 }
 
 /** 取表达式起始位置：真实形状在 `loc.start`，兼容顶层 `start`。 */
@@ -40,12 +42,12 @@ function expressionStart(expression: LocatorExpression): LocatorPosition | undef
   return expression.loc?.start ?? expression.start
 }
 
-/** components 条目（@locator 注入：{ name, locString, loc }；嵌套组件可有 wrappingComponentId）。 */
+/** components 条目（@locator 注入：{ name, locString, loc }；本插件：{ name, loc, wrappingComponentId }）。 */
 export interface LocatorComponent {
   name?: string
   locString?: string
   loc?: { start?: LocatorPosition; end?: LocatorPosition }
-  wrappingComponentId?: number
+  wrappingComponentId?: number | string
 }
 
 export interface LocatorFileEntry {
@@ -76,7 +78,7 @@ export function readLocatorData(): Record<string, LocatorFileEntry> {
 /** 通过 data-locatorjs-id 的 id（`<fullPath>::<expressionId>`）反查源码位置。 */
 export function lookupLocatorData(
   id: string,
-): { path: string; line: number; column: number; name?: string } | undefined {
+): { path: string; line: number; column: number; name?: string; chain?: ChainNode[] } | undefined {
   const data = readLocatorData()
   const sep = id.lastIndexOf('::')
   if (sep === -1) {
@@ -90,12 +92,83 @@ export function lookupLocatorData(
   const expression = entry.expressions[expressionId] ?? entry.expressionsCE?.[expressionId]
   if (expression === undefined) return undefined
   const start = expressionStart(expression)
+  const chain = componentChainForExpression(entry, expression)
   return {
     path: fullPath,
     line: start?.line ?? 1,
     column: start?.column ?? 0,
     name: expression.name,
+    ...(chain === undefined || chain.length <= 1 ? {} : { chain }),
   }
+}
+
+/** 最近位置匹配：jsx（数字 id）与 createElement（c<n> id）条目都参与，互不冲突。 */
+function nearestExpressionAt(
+  entry: LocatorFileEntry,
+  line: number,
+  column: number,
+): LocatorExpression | undefined {
+  let best: LocatorExpression | undefined
+  let bestLineDistance = Number.POSITIVE_INFINITY
+  let bestColumnDistance = Number.POSITIVE_INFINITY
+  const expressions = [
+    ...Object.values(entry.expressions),
+    ...Object.values(entry.expressionsCE ?? {}),
+  ]
+  for (const expression of expressions) {
+    const start = expressionStart(expression)
+    if (start === undefined) continue
+    const lineDistance = Math.abs(start.line - line)
+    const columnDistance = Math.abs(start.column - column)
+    if (lineDistance < bestLineDistance
+      || (lineDistance === bestLineDistance && columnDistance < bestColumnDistance)) {
+      bestLineDistance = lineDistance
+      bestColumnDistance = columnDistance
+      best = expression
+    }
+  }
+  return best
+}
+
+/**
+ * 沿表达式的 `wrappingComponentId` → `components` 链上溯，返回
+ * `[最外层, …, 最内层包裹组件]` 的完整组件路径（不含元素表达式的名字）。
+ * 每层携带组件声明位置（components 条目注入的 `loc.start`，声明链同文件，
+ * path 取文件绝对路径；loc 缺失时仅名字）。
+ * 链断裂/缺条目/成环时返回已解析到的部分链；无包裹组件时返回 undefined。
+ */
+export function componentChainForExpression(
+  entry: LocatorFileEntry,
+  expression: LocatorExpression,
+): ChainNode[] | undefined {
+  const wrap = expression.wrappingComponentId
+  if (wrap === undefined || wrap === null) return undefined
+  const visited = new Set<string | number>()
+  const chain: ChainNode[] = []
+  // 防御两种注入形状：本插件的是相对 filePath（projectPath + filePath）；
+  // 其他注入方/测试数据可能直接给绝对 filePath，此时不再拼 projectPath。
+  const fullPath = entry.filePath.startsWith(entry.projectPath)
+    ? entry.filePath
+    : `${entry.projectPath}${entry.filePath}`
+  let currentId: number | string | undefined = wrap
+  let guard = 0
+  while (currentId !== undefined && guard < 20) {
+    if (visited.has(currentId)) break
+    visited.add(currentId)
+    const component: LocatorComponent | undefined = entry.components[String(currentId)]
+    if (component === undefined) break
+    const name = expressionName(component)
+    if (name !== undefined) {
+      const node: ChainNode = { name, path: fullPath }
+      const start = component.loc?.start
+      if (start?.line !== undefined) node.line = start.line
+      if (start?.column !== undefined) node.column = start.column
+      chain.unshift(node)
+    }
+    currentId = component.wrappingComponentId
+    guard += 1
+  }
+  return chain.length === 0 ? undefined : chain
 }
 
 /**
@@ -117,59 +190,32 @@ export function lookupComponentNameByPosition(
   const data = readLocatorData()
   const entry = data[path]
   if (entry === undefined) return undefined
-  let best: LocatorExpression | undefined
-  let bestLineDistance = Number.POSITIVE_INFINITY
-  let bestColumnDistance = Number.POSITIVE_INFINITY
-  // JSX（expressions，数字 id）与 createElement（expressionsCE，c<n> id）条目
-  // 都参与最近位置匹配，互不冲突。
-  const expressions = [
-    ...Object.values(entry.expressions),
-    ...Object.values(entry.expressionsCE ?? {}),
-  ]
-  for (const expression of expressions) {
-    const start = expressionStart(expression)
-    if (start === undefined) continue
-    const lineDistance = Math.abs(start.line - line)
-    const columnDistance = Math.abs(start.column - column)
-    if (lineDistance < bestLineDistance
-      || (lineDistance === bestLineDistance && columnDistance < bestColumnDistance)) {
-      bestLineDistance = lineDistance
-      bestColumnDistance = columnDistance
-      best = expression
-    }
-  }
+  const best = nearestExpressionAt(entry, line, column)
   if (best === undefined) return undefined
-  return componentNameForExpression(entry, best) ?? expressionName(best)
+  // 链为 [最外层, …, 最内层包裹组件]：单名查询取最外层（与原行为一致）——
+  // chain 现为节点对象，取 .name。
+  return componentChainForExpression(entry, best)?.at(0)?.name ?? expressionName(best)
+}
+
+/**
+ * 按 (path, line, column) 反查完整组件路径 `[最外层, …, 最内层包裹组件]`
+ * （多层组件定位：hover 任意元素拿到它所在的整条组件链）。
+ * 无注册表条目/无表达式/无包裹链时返回 undefined。
+ */
+export function componentChainByPosition(
+  path: string,
+  line: number,
+  column: number,
+): ChainNode[] | undefined {
+  const data = readLocatorData()
+  const entry = data[path]
+  if (entry === undefined) return undefined
+  const best = nearestExpressionAt(entry, line, column)
+  if (best === undefined) return undefined
+  return componentChainForExpression(entry, best)
 }
 
 function expressionName(expression: LocatorExpression): string | undefined {
   const name = expression.name
   return name === undefined || name === '' ? undefined : name
-}
-
-/**
- * 沿表达式的 `wrappingComponentId` → `components` 链上溯到最外层包裹组件。
- * 返回最后一个有名字的组件名；链断裂/缺条目/成环时返回已找到的最近名字。
- */
-function componentNameForExpression(
-  entry: LocatorFileEntry,
-  expression: LocatorExpression,
-): string | undefined {
-  const wrap = expression.wrappingComponentId
-  if (wrap === undefined || wrap === null) return undefined
-  const visited = new Set<number>()
-  let currentId: number | undefined = wrap
-  let lastNamed: string | undefined
-  let guard = 0
-  while (currentId !== undefined && guard < 20) {
-    if (visited.has(currentId)) return lastNamed
-    visited.add(currentId)
-    const component: LocatorComponent | undefined = entry.components[String(currentId)]
-    if (component === undefined) return lastNamed
-    const name = expressionName(component)
-    if (name !== undefined) lastNamed = name
-    currentId = component.wrappingComponentId
-    guard += 1
-  }
-  return lastNamed
 }

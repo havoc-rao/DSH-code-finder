@@ -128,10 +128,12 @@ export function createOverlay(): OverlayHandle {
     box.style.height = `${rect.height + 4}px`
     box.classList.add('visible')
 
-    // 标签两行：第一行 <组件名>，第二行 完整路径:行（不显示列，列仅用于内部
-    // 组件名反查与跳转载荷；无位置时提示无源码信息）。
-    // 完整路径直接可见（不再只显示 basename，完整路径此前仅在 title tooltip）。
-    nameEl.textContent = `<${hit.name === '' ? '未知组件' : hit.name}>`
+    // 标签两行：第一行 组件路径（多层链 `App › Sidebar › FolderRow`；无链时单
+    // 个 <组件名>），第二行 完整路径:行（不显示列，列仅用于内部组件名反查与
+    // 跳转载荷；无位置时提示无源码信息）。完整路径直接可见。
+    nameEl.textContent = hit.chain !== undefined && hit.chain.length > 1
+      ? hit.chain.map(node => `<${node.name}>`).join(' › ')
+      : `<${hit.name === '' ? '未知组件' : hit.name}>`
     if (hit.path !== undefined) {
       const location = `${hit.path}${hit.line !== undefined ? `:${hit.line}` : ''}`
       pathEl.textContent = location
@@ -140,7 +142,18 @@ export function createOverlay(): OverlayHandle {
       pathEl.textContent = '（无源码信息）'
       pathEl.style.opacity = '0.7'
     }
-    label.title = hit.path ?? ''
+    // title 带每层父组件声明位置（`Name @ path:line`，列不展示）+ 命中位置。
+    const tooltip: string[] = []
+    if (hit.chain !== undefined && hit.chain.length > 1) {
+      for (const node of hit.chain) {
+        const loc = `${node.path ?? '?'}${node.line !== undefined ? `:${node.line}` : ''}`
+        tooltip.push(`${node.name} @ ${loc}`)
+      }
+    }
+    if (hit.path !== undefined) {
+      tooltip.push(hit.path)
+    }
+    label.title = tooltip.join('\n')
     label.classList.toggle('under', rect.top < 50)
   }
 

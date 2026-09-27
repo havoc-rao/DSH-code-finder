@@ -1,19 +1,27 @@
 /**
  * dcf roots 命令 —— 管理一个 DSH profile 的 cordis.patch.yml 里针对
- * `dsh-code-finder`（dcf 包官方 bundle 挂载行的 id）的 `config.roots` 覆盖。
+ * dcf 挂载行的 `config.roots` 覆盖。
  *
  * 背景（与 cordis-plugin-include 1.0.6 / dsh 0.1.2 实装对照，实证见
  * .dsh/delegations 复盘）：profile patch 层是**按 id 定位的补丁列表**
- * （`applyEntryPatches`），正确写法是顶层补丁项 `- id: dsh-code-finder`
+ * （`applyEntryPatches`），正确写法是顶层补丁项 `- id: <挂载行 id>`
  * + `config: { roots: [...] }`；`- overrides:` 包裹写法不被 loader 识别，
  * boot 时告警 "patch: id is required for non-insert patches" 并整体跳过
  * （静默 no-op）。
  *
+ * 默认目标 id 是包内官方 bundle patch（cordis.patch.yml）挂载行的
+ * `dsh-code-finder`（{@link ROOTS_TARGET_ID}）。**宿主侧若用了自定义 id 的
+ * 挂载行**（如 deepseek-harness 接入时手写的 `dsh-code-finder-mount`，官方行
+ * 会被其 double-mount 守卫禁用），补丁必须指向**实际生效的那一行**——用
+ * `dcf roots add <profile> <path> --entry-id dsh-code-finder-mount`（或
+ * `remove`/`list` 同款）。对已禁用行打补丁是静默 no-op：config 改了，行不挂载。
+ *
  * 覆盖语义：`config.roots` 是**完全替换**（host 半 resolveHostConfig 只在
- * 完全没有 roots 键时回退默认 `~/.dsh/source/current` + `<host cwd>/src`，
- * 见 src/cordis/host.ts 的 `config?.roots ?? defaultRoots()`；patch 层也是
- * 整键赋值）。所以本 CLI 创建新覆盖块时**播种两条默认根**（写全、保持
- * "无覆盖时的行为"），已有列表只做幂等追加，绝不改写用户条目。
+ * 完全没有 roots 键时回退默认 `~/.dsh/source/current` + `<host cwd>/src`
+ * （+ monorepo packages/apps 补位），见 src/cordis/host.ts 的
+ * `config?.roots ?? defaultRoots()`；patch 层也是整键赋值）。所以本 CLI 创建
+ * 新覆盖块时**播种两条默认根**（写全、保持"无覆盖时的行为"），已有列表只做
+ * 幂等追加，绝不改写用户条目。
  *
  * 全部为文本手术（与 config-edit.ts 同风格）：零运行时依赖、字节级保留
  * 用户内容、可重复执行（幂等）、不写任何备份文件。
@@ -53,7 +61,7 @@ export interface RootsItem {
   line: number
 }
 
-/** 定位到的 `- id: dsh-code-finder` 补丁块结构。 */
+/** 定位到的 `- id: <entryId>` 补丁块结构。 */
 export interface RootsBlock {
   /** `- id:` 行号（0-based）。 */
   entryIndex: number
@@ -127,12 +135,13 @@ function hasInlineContent(line: string): boolean {
   return after !== '' && !after.startsWith('#')
 }
 
-/** 定位 profile patch 里的 dcf roots 覆盖块（无则返回 undefined）。 */
-export function findRootsBlock(lines: string[], cwd = process.cwd()): RootsBlock | undefined {
+/** 定位 profile patch 里的 dcf roots 覆盖块（无则返回 undefined）。
+ *  @param entryId - 目标挂载行 id（默认官方行 {@link ROOTS_TARGET_ID}）。 */
+export function findRootsBlock(lines: string[], cwd = process.cwd(), entryId = ROOTS_TARGET_ID): RootsBlock | undefined {
   let entryIndex: number | undefined
   for (let i = 0; i < lines.length; i += 1) {
     const id = rowIdOf(lines[i] ?? '')
-    if (id === ROOTS_TARGET_ID) { entryIndex = i; break }
+    if (id === entryId) { entryIndex = i; break }
   }
   if (entryIndex === undefined) return undefined
   const entryIndent = /^[ \t]*/u.exec(lines[entryIndex] ?? '')?.[0] ?? ''
@@ -188,24 +197,55 @@ function yamlScalar(value: string): string {
   return `'${value.replace(/'/gu, "''")}'`
 }
 
+/** 列 0 的孤立 `[]` 空数组文档行（deepseek-harness 的 profile 模板形态）。
+ *  trim 后整行就是 flow 风格空序列（容忍 `[ ]` 与尾部注释）。只认列 0 ——
+ *  缩进的 `  []` 可能是映射值的合法续行（如 `roots:` 下换行写空列表），不能动。 */
+const STRAY_EMPTY_ARRAY_DOC = /^\[[ \t]*\](?:[ \t]+#.*)?$/u
+
+/** 从源行中移除「列 0 孤立 `[]` 空数组文档」行：模板遗留 / 旧版 bug 直接在
+ *  模板文件上追加块留下的非法多文档残留（`[]` 之后无 `---` 就跟列表条目，
+ *  js-yaml 单文档 load 必抛 YAMLException）。返回清理后的行数组与移除行数。
+ *  零依赖纯文本手术，与其它读写一致。 */
+function stripStrayEmptyArrayDocs(lines: readonly string[]): { cleaned: string[], removed: number } {
+  const cleaned: string[] = []
+  let removed = 0
+  for (const line of lines) {
+    if (line.startsWith('[') && STRAY_EMPTY_ARRAY_DOC.test(line.trim())) {
+      removed += 1
+      continue
+    }
+    cleaned.push(line)
+  }
+  return { cleaned, removed }
+}
+
 /**
  * 确保 patch 源里存在 dcf 的 roots 覆盖：
  * - 目标补丁项/列表不存在 → 追加新补丁项并**播种两条默认根**（写全语义）；
  * - 列表已存在 → 只追加缺失项（按归一化键幂等，js 表达式按原文精确去重）。
  * 绝不改写既有条目；返回变更后的源码与逐项结果。
+ *
+ * 文件安全（bug 回归）：写入前先剥离「列 0 孤立 `[]` 空数组文档」行——模板
+ * 文件的 `[]`（或旧版 bug 在其后追加块留下的残留）会让产物变成无 `---` 分隔
+ * 的多文档流，宿主 js-yaml 单文档 load 必炸；剥离后再追加/更新，产物始终是
+ * 合法单文档纯数组。空文件/纯注释/`- ` 条目列表之外的非列表文档形态追加必
+ * 然错位，改为抛出 {@link RootsEditError} 明确拒绝，绝不写出非法文件。
+ * @param entryId - 目标挂载行 id（默认官方行 {@link ROOTS_TARGET_ID}；
+ *   宿主自定义挂载行 id 时传入，如 dsh-code-finder-mount）。
  */
 export function ensureRoots(
   source: string,
   additions: readonly string[],
   cwd = process.cwd(),
+  entryId = ROOTS_TARGET_ID,
 ): { source: string, changed: boolean, added: string[], skipped: string[] } {
   const eol = source.includes('\r\n') ? '\r\n' : '\n'
-  const lines = source.split(/\r?\n/u)
+  const { cleaned: lines, removed: stripped } = stripStrayEmptyArrayDocs(source.split(/\r?\n/u))
   const requested = additions.map(value => ({ value: value.trim(), ...rootsItemKey(value, cwd) }))
   const seen = new Set<string>()
   const added: string[] = []
   const skipped: string[] = []
-  const block = findRootsBlock(lines, cwd)
+  const block = findRootsBlock(lines, cwd, entryId)
   if (block !== undefined && block.rootsIndex !== undefined) {
     const existing = new Set(block.items.map(item => item.key))
     // 在列表末尾追加（保留列表内注释；对齐已有条目缩进）。
@@ -221,7 +261,10 @@ export function ensureRoots(
       existing.add(item.key)
       added.push(item.value)
     }
-    if (added.length === 0) return { source, changed: false, added, skipped }
+    if (added.length === 0) {
+      // 无可加条目：若剥离了孤立 `[]`（旧版 bug 的损坏文件），提交修复。
+      return { source: stripped > 0 ? lines.join(eol) : source, changed: stripped > 0, added, skipped }
+    }
     return { source: lines.join(eol), changed: true, added, skipped }
   }
   // 无 roots 列表（覆盖块不存在 / 只有补丁项无 config / 有 config 无 roots）：
@@ -263,11 +306,21 @@ export function ensureRoots(
     lines.splice(gap, 0, ...inserted)
     return { source: lines.join(eol), changed: true, added, skipped }
   }
-  // 全新补丁项：整块追加到文件末尾（带回车分隔与 dcf 头部注释）。
+  // 全新补丁项：整块追加到文件末尾（带回车分隔与 dcf 头部注释）。只有文件
+  // 为空/纯注释（孤立 `[]` 已在上方剥离），或本身就是 `- ` 块序列时追加才是
+  // 合法的单文档；其它文档形态（mapping/标量/`---` 多文档流）追加必然错位，
+  // 明确报错而不是写出宿主 loader 解析失败的文件。
   const out = [...lines]
   while (out.length > 0 && (out[out.length - 1] ?? '').trim() === '') out.pop()
+  const firstContent = out.find(line => line.trim() !== '' && !line.trim().startsWith('#'))
+  if (firstContent !== undefined && !/^[ \t]*- /u.test(firstContent)) {
+    throw new RootsEditError(
+      `patch 文件首条内容不是补丁列表项（"${firstContent.trim().slice(0, 48)}"），无法安全追加 roots 覆盖块；`
+      + '请把文件整理为条目列表或空数组 `[]` 后重试',
+    )
+  }
   const tail = out.length > 0 && (out[out.length - 1] ?? '').trim() !== '' ? [''] : []
-  const final = [...out, ...tail, ...BLOCK_HEADER, '- id: dsh-code-finder', '  config:', '    roots:', ...itemLines, '']
+  const final = [...out, ...tail, ...BLOCK_HEADER, `- id: ${entryId}`, '  config:', '    roots:', ...itemLines, '']
   return { source: final.join(eol), changed: true, added, skipped }
 }
 
@@ -283,19 +336,27 @@ function blockEnd(lines: string[], startIndex: number, parentIndent: string): nu
 }
 
 /** 移除指定 roots（literal 按归一化键、js 按表达式原文匹配）；列表清空时整个
- *  补丁项连同 dcf 头部注释一起删除（恢复「无覆盖 → 默认 roots」）。 */
+ *  补丁项连同 dcf 头部注释一起删除（恢复「无覆盖 → 默认 roots」）。若清空后
+ *  文件只剩注释/空行，补回模板形态的空数组文档 `[]`（空输入会让宿主 js-yaml
+ *  单文档 load 抛 "expected a document"）。写入前同样先剥离孤立 `[]` 行，
+ *  因此对旧版 bug 损坏的文件（`[]` + 追加块）执行 remove 也能一键修复。
+ *  @param entryId - 目标挂载行 id（默认官方行 {@link ROOTS_TARGET_ID}）。 */
 export function removeRoots(
   source: string,
   removals: readonly string[],
   cwd = process.cwd(),
+  entryId = ROOTS_TARGET_ID,
 ): { source: string, changed: boolean, removed: string[], missing: string[] } {
   const eol = source.includes('\r\n') ? '\r\n' : '\n'
-  const lines = source.split(/\r?\n/u)
+  // 先剥离「列 0 孤立 `[]` 空数组文档」行再分析；只有文件里确实涉及 dcf
+  // 补丁块（旧版 bug 的损坏残留：`[]` + 追加块）时才提交这次剥离修复——
+  // 无 dcf 块的纯净模板/无覆盖文件保持逐字节原样（剥离只会让宿主 load 更糟）。
+  const { cleaned: lines, removed: stripped } = stripStrayEmptyArrayDocs(source.split(/\r?\n/u))
   let block: RootsBlock | undefined
   try {
-    block = findRootsBlock(lines, cwd)
+    block = findRootsBlock(lines, cwd, entryId)
   } catch {
-    return { source, changed: false, removed: [], missing: removals.map(r => r.trim()) }
+    return { source: stripped > 0 ? lines.join(eol) : source, changed: stripped > 0, removed: [], missing: removals.map(r => r.trim()) }
   }
   if (block === undefined || block.rootsIndex === undefined) {
     return { source, changed: false, removed: [], missing: removals.map(r => r.trim()) }
@@ -307,7 +368,9 @@ export function removeRoots(
   }
   const removed = targets.filter(t => dead.size > 0 && block?.items.some(item => item.key === t.key)).map(t => t.value)
   const missing = targets.filter(t => !removed.includes(t.value)).map(t => t.value)
-  if (dead.size === 0) return { source, changed: false, removed, missing }
+  if (dead.size === 0) {
+    return { source: stripped > 0 ? lines.join(eol) : source, changed: stripped > 0, removed, missing }
+  }
   let next = lines.filter((_, i) => !dead.has(i))
   const remainingItems = block.items.filter(item => !dead.has(item.line))
   if (remainingItems.length === 0) {
@@ -335,15 +398,20 @@ export function removeRoots(
       next = [...next.slice(0, block.entryIndex), ...next.slice(entryEnd)]
     }
     while (next.length > 0 && (next[next.length - 1] ?? '').trim() === '') next.pop()
+    // 剩余只有注释/空行 → 补回模板形态的空数组文档 `[]`（恢复「无覆盖」的
+    // 模板状态；也为宿主 loader 兜底：空输入会让 js-yaml 单文档 load 抛
+    // "expected a document, but the input is empty"）。
+    if (!next.some(line => line.trim() !== '' && !line.trim().startsWith('#'))) next.push('[]')
   }
   return { source: next.join(eol), changed: true, removed, missing }
 }
 
-/** 列出当前覆盖块里的 roots（原始文本），无覆盖返回 null。 */
-export function listRoots(source: string, cwd = process.cwd()): RootsItem[] | null {
+/** 列出当前覆盖块里的 roots（原始文本），无覆盖返回 null。
+ *  @param entryId - 目标挂载行 id（默认官方行 {@link ROOTS_TARGET_ID}）。 */
+export function listRoots(source: string, cwd = process.cwd(), entryId = ROOTS_TARGET_ID): RootsItem[] | null {
   const lines = source.split(/\r?\n/u)
   try {
-    const block = findRootsBlock(lines, cwd)
+    const block = findRootsBlock(lines, cwd, entryId)
     return block?.rootsIndex !== undefined ? block.items : null
   } catch {
     return null
@@ -376,4 +444,31 @@ export function profilePatchPath(profileDir: string): string {
   const yml = join(profileDir, 'cordis.patch.yml')
   const yaml = join(profileDir, 'cordis.patch.yaml')
   return existsSync(yaml) && !existsSync(yml) ? yaml : yml
+}
+
+/**
+ * 从一份 cordis.patch.yml 源码里提取所有「挂载
+ * `@havocrao/dsh-code-finder` 的行」的 entry id（行级扫描：name 行向前找最近
+ * 的 `- id:` 行；insert 容器的 group id 在更远处，不会抢占）。
+ *
+ * 用于 status 诊断：宿主/聚合层可能用自定义 id 挂载（如 deepseek-harness 的
+ * `dsh-code-finder-mount`），此时 roots 补丁若仍按官方行 id 写，会落到被
+ * double-mount 守卫禁用（或不存在）的行上静默失效——诊断出非官方 id 就提示
+ * `--entry-id`。
+ */
+export function findDcfMountRowIds(source: string): string[] {
+  const ids: string[] = []
+  let lastEntryId: string | undefined
+  for (const line of source.split(/\r?\n/u)) {
+    const id = rowIdOf(line)
+    if (id !== undefined) {
+      lastEntryId = id
+      continue
+    }
+    const nameMatch = /^[ \t]*name:\s*['"]?@havocrao\/dsh-code-finder['"]?\s*$/u.exec(line)
+    if (nameMatch !== null && lastEntryId !== undefined && !ids.includes(lastEntryId)) {
+      ids.push(lastEntryId)
+    }
+  }
+  return ids
 }

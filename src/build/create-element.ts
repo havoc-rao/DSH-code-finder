@@ -32,6 +32,7 @@
  *   `Invalid prop ... supplied to React.Fragment`）。
  */
 import type { NodePath, PluginObj, PluginPass, types as BabelTypes } from '@babel/core'
+import { isAbsolute } from 'node:path'
 import { isReactFragmentTag } from './fragment'
 
 export interface CreateElementPluginOptions {
@@ -56,12 +57,15 @@ const RUNTIME_NAMESPACE_NAMES = new Set(['jsx_runtime', '_jsx_runtime', 'jsxRunt
 /** react 系 import 来源（命中判定用）。 */
 const REACT_IMPORT_SOURCES: readonly string[] = ['react', 'react/jsx-runtime', 'react/jsx-dev-runtime']
 
+/** 本插件写入注册表的组件 key 前缀（与 @locator 的数字下标错开，并排写入不冲突）。 */
+const CE_COMPONENT_KEY_PREFIX = 'ce-'
+
 /** 注册表条目形状（与 locator expressions 条目对齐：位置在 loc.start）。 */
 interface LocatedEntry {
   name?: string
   loc: BabelTypes.SourceLocation
-  /** 包裹函数在 locator components 数组里的序号（本插件按同一规则编号）。 */
-  wrappingComponentId?: number
+  /** 包裹组件在本插件 components 对象里的 key（`ce-N`）。 */
+  wrappingComponentId?: string
 }
 
 /**
@@ -74,11 +78,54 @@ export function codeFinderCreateElement(babel: { types: typeof BabelTypes }): Pl
   // 每文件的注入状态（Program.enter 重置）。
   let entries: Array<{ key: string; entry: LocatedEntry }> = []
   let nextId = 0
-  // 包裹组件栈：与 @locator/babel-jsx 的 components 编号（含 id 的 FunctionDeclaration
-  // 按文档序从 0 递增）保持同一套序号，给条目补 wrappingComponentId——hover 时
-  // 客户端能沿 components 链解析出包裹组件名（与 JSX 模式行为一致）。
+  // 包裹组件栈（组件 key 栈）：function/class/箭头声明都进栈——现代 React 的
+  // 组件几乎都是 `const Foo = (...) => ...`，只收 function/class 会让链数据
+  // 大面积缺失（多层 path 拿不到）。本插件用自己的 `ce-N` key 空间写
+  // components（与 @locator 的数字下标错开，并排写入不冲突）。
   let componentSeq = 0
-  let componentStack: number[] = []
+  let componentStack: string[] = []
+  // 组件声明收集（注册表 components 从此生成；key = `ce-<seq>`）。
+  let componentDeclarations: Array<{
+    key: string
+    name: string
+    loc: BabelTypes.SourceLocation | null | undefined
+    wrappingComponentId: string | undefined
+  }> = []
+
+  /** 登记一个组件声明并入栈；返回它的 key（非组件返回 undefined）。 */
+  const beginComponent = (
+    name: string,
+    loc: BabelTypes.SourceLocation | null | undefined,
+  ): string | undefined => {
+    if (name === '' || loc === null || loc === undefined) return undefined
+    const key = `${CE_COMPONENT_KEY_PREFIX}${componentSeq}`
+    componentSeq += 1
+    componentDeclarations.push({
+      key,
+      name,
+      loc,
+      wrappingComponentId: componentStack[componentStack.length - 1],
+    })
+    componentStack.push(key)
+    return key
+  }
+
+  /** 变量声明是否为组件形态：大写标识符 + 箭头函数（或 memo/forwardRef 包装）。 */
+  const arrowComponentName = (path: NodePath<BabelTypes.VariableDeclarator>): string | undefined => {
+    const id = path.node.id
+    if (!t.isIdentifier(id) || !/^[A-Z]/u.test(id.name)) return undefined
+    const init = path.node.init
+    if (t.isArrowFunctionExpression(init)) return id.name
+    if (t.isCallExpression(init) && init.arguments.length > 0) {
+      const callee = init.callee
+      const wrapper = t.isIdentifier(callee) || (t.isMemberExpression(callee) && !callee.computed)
+        ? (t.isIdentifier(callee) ? callee.name
+          : t.isIdentifier(callee.property) ? callee.property.name : undefined)
+        : undefined
+      if (wrapper === 'memo' || wrapper === 'forwardRef') return id.name
+    }
+    return undefined
+  }
 
   return {
     name: 'dsh-code-finder:create-element',
@@ -89,23 +136,44 @@ export function codeFinderCreateElement(babel: { types: typeof BabelTypes }): Pl
           nextId = 0
           componentSeq = 0
           componentStack = []
+          componentDeclarations = []
         },
         exit(path, state) {
           if (entries.length === 0) return
-          path.node.body.push(buildRegistryStatement(t, state, entries))
+          path.node.body.push(buildRegistryStatement(t, state, entries, componentDeclarations))
         },
       },
       FunctionDeclaration: {
         enter(path) {
-          if (path.node.id !== null && path.node.loc !== null && path.node.loc !== undefined) {
-            componentStack.push(componentSeq)
-            componentSeq += 1
-          }
+          const id = path.node.id
+          if (id === null || id === undefined) return
+          const key = beginComponent(id.name, path.node.loc)
+          if (key !== undefined) (path.node as { __cfKey?: string }).__cfKey = key
         },
         exit(path) {
-          if (path.node.id !== null && path.node.loc !== null && path.node.loc !== undefined) {
-            componentStack.pop()
-          }
+          if ((path.node as { __cfKey?: string }).__cfKey !== undefined) componentStack.pop()
+        },
+      },
+      ClassDeclaration: {
+        enter(path) {
+          const id = path.node.id
+          if (id === null || id === undefined) return
+          const key = beginComponent(id.name, path.node.loc)
+          if (key !== undefined) (path.node as { __cfKey?: string }).__cfKey = key
+        },
+        exit(path) {
+          if ((path.node as { __cfKey?: string }).__cfKey !== undefined) componentStack.pop()
+        },
+      },
+      VariableDeclarator: {
+        enter(path) {
+          const name = arrowComponentName(path)
+          if (name === undefined) return
+          const key = beginComponent(name, path.node.loc)
+          if (key !== undefined) (path.node as { __cfKey?: string }).__cfKey = key
+        },
+        exit(path) {
+          if ((path.node as { __cfKey?: string }).__cfKey !== undefined) componentStack.pop()
         },
       },
       CallExpression(path, state) {
@@ -234,7 +302,7 @@ function injectCall(
   state: PluginPass,
   entries: Array<{ key: string; entry: LocatedEntry }>,
   nextKey: () => string,
-  componentStack: readonly number[],
+  componentStack: readonly string[],
 ): boolean {
   const node = path.node
   const loc = node.loc
@@ -330,30 +398,59 @@ function tagName(
   return undefined
 }
 
-/** 文件级定位信息（与 locator 完全相同：projectPath = cwd，filePath = 相对 cwd）。 */
+/** 文件级定位信息（与 locator 相同：projectPath = cwd，filePath = 相对 cwd；
+ *  absPath 对绝对 filename 直接采用，防止 cwd 前缀拼接错位）。 */
 function registryPaths(state: PluginPass): { absPath: string; filePath: string; projectPath: string } {
   const projectPath = typeof state.cwd === 'string' ? state.cwd : ''
   const filename = typeof state.filename === 'string' ? state.filename : ''
   const filePath = filename.startsWith(projectPath) ? filename.slice(projectPath.length) : filename
-  return { absPath: projectPath + filePath, filePath, projectPath }
+  const absPath = isAbsolute(filename) ? filename : projectPath + filePath
+  return { absPath, filePath, projectPath }
 }
 
 /** `window.__LOCATOR_DATA__` 注册表 IIFE：文件无条目时写完整文件项（含
- *  expressionsCE），已有条目（JSX 插件写过）时只补 expressionsCE。 */
+ *  expressionsCE 与 components），已有条目（JSX 插件写过）时补 expressionsCE
+ *  并把本插件的 components 合并进去（`ce-N` key 与 @locator 的数字 key 不冲突）。 */
 function buildRegistryStatement(
   t: typeof BabelTypes,
   state: PluginPass,
   entries: Array<{ key: string; entry: LocatedEntry }>,
+  components: ReadonlyArray<{
+    key: string
+    name: string
+    loc: BabelTypes.SourceLocation | null | undefined
+    wrappingComponentId: string | undefined
+  }>,
 ): BabelTypes.ExpressionStatement {
   const { absPath, filePath, projectPath } = registryPaths(state)
   const entriesObject = t.objectExpression(
     entries.map(({ key, entry }) => t.objectProperty(t.stringLiteral(key), jsonToNode(t, entry))),
   )
+  // components 链：key 为 `ce-N`（与 @locator 数字下标错开可并排合并），条目携带
+  // 声明位置与包裹组件 key——表达式的 wrappingComponentId 沿此链上溯即可还原
+  // 「最外层 → 最内层包裹组件」的完整 path（多层组件定位）。
+  const componentsObject = t.objectExpression(
+    components.flatMap((decl) =>
+      decl.name === '' ? [] : [t.objectProperty(
+        t.stringLiteral(decl.key),
+        jsonToNode(t, {
+          name: decl.name,
+          loc: decl.loc === null || decl.loc === undefined ? undefined : {
+            start: { line: decl.loc.start.line, column: decl.loc.start.column },
+            ...(decl.loc.end === null || decl.loc.end === undefined ? {} : {
+              end: { line: decl.loc.end.line, column: decl.loc.end.column },
+            }),
+          },
+          ...(decl.wrappingComponentId === undefined ? {} : { wrappingComponentId: decl.wrappingComponentId }),
+        }),
+      )],
+    ),
+  )
   const fileEntry = t.objectExpression([
     t.objectProperty(t.stringLiteral('filePath'), t.stringLiteral(filePath)),
     t.objectProperty(t.stringLiteral('projectPath'), t.stringLiteral(projectPath)),
     t.objectProperty(t.stringLiteral('expressions'), t.objectExpression([])),
-    t.objectProperty(t.stringLiteral('components'), t.objectExpression([])),
+    t.objectProperty(t.stringLiteral('components'), componentsObject),
     t.objectProperty(t.stringLiteral('styledDefinitions'), t.objectExpression([])),
     t.objectProperty(t.stringLiteral('expressionsCE'), entriesObject),
   ])
@@ -374,12 +471,26 @@ function buildRegistryStatement(
     t.ifStatement(
       t.unaryExpression('!', entryRef),
       t.expressionStatement(t.assignmentExpression('=', lookup, fileEntry)),
-      t.ifStatement(
-        t.unaryExpression('!', t.memberExpression(entryRef, t.identifier('expressionsCE'))),
-        t.expressionStatement(
-          t.assignmentExpression('=', t.memberExpression(entryRef, t.identifier('expressionsCE')), entriesObject),
+      // 并排场景（@locator 已写 fileEntry）：补 expressionsCE，并把本插件的
+      // ce-N components 合并进现有 components（key 空间错开，不覆盖 @locator）。
+      t.blockStatement([
+        t.ifStatement(
+          t.unaryExpression('!', t.memberExpression(entryRef, t.identifier('expressionsCE'))),
+          t.expressionStatement(
+            t.assignmentExpression('=', t.memberExpression(entryRef, t.identifier('expressionsCE')), entriesObject),
+          ),
         ),
-      ),
+        t.ifStatement(
+          t.unaryExpression('!', t.memberExpression(entryRef, t.identifier('components'))),
+          t.expressionStatement(
+            t.assignmentExpression('=', t.memberExpression(entryRef, t.identifier('components')), componentsObject),
+          ),
+          t.expressionStatement(t.callExpression(t.identifier('Object.assign'), [
+            t.memberExpression(entryRef, t.identifier('components')),
+            componentsObject,
+          ])),
+        ),
+      ]),
     ),
   ])
   return t.expressionStatement(t.callExpression(t.arrowFunctionExpression([], body), []))

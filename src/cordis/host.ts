@@ -11,6 +11,7 @@
  *   `ctx.config` / apply 第二参，默认值在 {@link resolveHostConfig} 补齐
  *   （be-sider `resolveSidebarConfig` 同款「两种调用方式都默认」模式）。
  */
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -63,9 +64,24 @@ export interface ResolvedCodeFinderHostConfig {
   path: string
 }
 
-/** 默认 roots：~/.dsh/source/current（宿主源码）+ 当前仓库 src/（插件源码）。 */
-function defaultRoots(): string[] {
-  return [join(homedir(), '.dsh', 'source', 'current'), join(process.cwd(), 'src')]
+/**
+ * 默认 roots：~/.dsh/source/current（宿主源码）+ 当前仓库 src/（插件源码）
+ * + **monorepo 布局补位**（pnpm workspace 惯例 `packages/` / `apps/`，如
+ * deepseek-harness 的 `packages/client/<name>/src/client/...`）。
+ *
+ * 无 roots 覆盖时搜索层的命中率完全取决于这里——早期默认只有前两条，在
+ * 「宿主仓库根启动 + 源码全在 packages/ 下」的 DSH 布局里两条都是死路径，
+ * 名字兜底永远无法升级成 file:line。补位成本可控：collectFiles 按路径段
+ * 排除 node_modules/lib/dist 等目录（不递归进入），索引只覆盖各包的 src/；
+ * 目录存在才加入，cwd 是无关目录时行为与旧版完全一致。
+ */
+function defaultRoots(cwd = process.cwd()): string[] {
+  const roots = [join(homedir(), '.dsh', 'source', 'current'), join(cwd, 'src')]
+  for (const sub of ['packages', 'apps']) {
+    const candidate = join(cwd, sub)
+    if (existsSync(candidate)) roots.push(candidate)
+  }
+  return roots
 }
 
 /** 补齐默认值（目录不存在时 createSourceIndex 静默跳过，无需在此过滤）。 */

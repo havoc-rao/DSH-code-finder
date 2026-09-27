@@ -10,7 +10,7 @@
  * CLI 前缀：`dcf instrument lib --write`（见 src/cli/index.ts）。
  *
  * 语义与构建期逐条对齐：
- * - dev gating：codeFinderEnabled（NODE_ENV=development，CODE_FINDER 逃生门）；
+ * - dev gating：codeFinderEnabled（NODE_ENV=development；enabled 参数可覆盖）；
  * - 只处理自身源码：shouldInstrument（node_modules / 扩展名 / include/exclude）；
  * - transform 失败不中断：内部 warn + 跳过该文件；
  * - 幂等：已注入（props 已有 data-locatorjs key）的文件重复跑不重复注入；
@@ -54,7 +54,7 @@ export interface InstrumentDirResult {
   outDir?: string
   /** 是否已落盘（= options.write，且非生产 no-op）。 */
   write: boolean
-  /** 生产语义（非 dev 且无 CODE_FINDER 强制）整体跳过为 true。 */
+  /** 非 dev 语义（NODE_ENV 非 development 且未显式 enabled）整体跳过为 true。 */
   disabled: boolean
   files: InstrumentFileResult[]
   changed: number

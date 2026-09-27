@@ -36,33 +36,21 @@ afterEach(() => {
 describe('codeFinderEnabled', () => {
   it('NODE_ENV=development 默认开启', () => {
     vi.stubEnv('NODE_ENV', 'development')
-    vi.stubEnv('CODE_FINDER', '')
     expect(codeFinderEnabled(undefined)).toBe(true)
   })
 
-  it('NODE_ENV=production 默认关闭，CODE_FINDER=1 强制开启', () => {
+  it('未设 NODE_ENV 与 production 一样默认关闭', () => {
     vi.stubEnv('NODE_ENV', 'production')
-    vi.stubEnv('CODE_FINDER', '')
     expect(codeFinderEnabled(undefined)).toBe(false)
-    vi.stubEnv('CODE_FINDER', '1')
-    expect(codeFinderEnabled(undefined)).toBe(true)
+    vi.stubEnv('NODE_ENV', '')
+    expect(codeFinderEnabled(undefined)).toBe(false)
   })
 
-  it('显式 enabled 优先于环境变量', () => {
+  it('显式 enabled 是唯一覆盖层（独立于 NODE_ENV）', () => {
     vi.stubEnv('NODE_ENV', 'development')
     expect(codeFinderEnabled(false)).toBe(false)
     vi.stubEnv('NODE_ENV', 'production')
     expect(codeFinderEnabled(true)).toBe(true)
-  })
-
-  it('CODE_FINDER=0 在 dev 构建也强制关闭（总开关）', () => {
-    vi.stubEnv('NODE_ENV', 'development')
-    vi.stubEnv('CODE_FINDER', '0')
-    expect(codeFinderEnabled(undefined)).toBe(false)
-    vi.stubEnv('CODE_FINDER', 'off')
-    expect(codeFinderEnabled(undefined)).toBe(false)
-    vi.stubEnv('CODE_FINDER', '')
-    expect(codeFinderEnabled(undefined)).toBe(true)
   })
 })
 
@@ -135,8 +123,31 @@ describe('transformWithCodeFinder: createElement 模式', () => {
     // createElement 条目走 expressionsCE（c<n> 字符串 id，与 locator 数字 id 错开）
     expect(code).toContain('expressionsCE')
     expect(code).toContain('__LOCATOR_DATA__')
-    // 包裹组件链：Badge = components[0]，条目的 wrappingComponentId 指向它
-    expect(code).toContain('"wrappingComponentId": 0')
+    // 包裹组件链：Badge = components["ce-0"]，条目的 wrappingComponentId 指向它
+    expect(code).toContain('"wrappingComponentId": "ce-0"')
+    // createElement 通道的 components 链写入注册表（多层组件 path 的数据基础）：
+    // components["ce-0"] = Badge，带声明位置；无外层包裹组件时不带 wrappingComponentId
+    expect(code).toMatch(/"components":\s*\{\s*"ce-0":\s*\{\s*"name":\s*"Badge"/u)
+  })
+
+  it('箭头组件进入包裹链：嵌套声明可还原多层组件 path', async () => {
+    const source = [
+      "import React from 'react'",
+      'export function Panel() {',
+      "  const Header = (props) => React.createElement('h1', null, React.createElement('b', { k: 2 }, props.text))",
+      "  return React.createElement('div', null, React.createElement(Header, null), React.createElement('span', { k: 1 }))",
+      '}',
+      '',
+    ].join('\n')
+    const result = await transformWithCodeFinder(source, FILE, { enabled: true })
+    expect(result).not.toBeNull()
+    const code = result!.code
+    // 组件收集：Panel = components["ce-0"]（function 声明），嵌套箭头 Header = components["ce-1"]
+    // （包裹组件 = ce-0）；Header 体内的 <b> 表达式 wrappingComponentId = "ce-1"，可上溯出
+    // ["Panel", "Header"] 的多层 path。
+    expect(code).toMatch(/"ce-0":\s*\{\s*"name":\s*"Panel"/u)
+    expect(code).toMatch(/"ce-1":\s*\{\s*"name":\s*"Header"[\s\S]{0,400}"wrappingComponentId":\s*"ce-0"/u)
+    expect(code).toMatch(/"wrappingComponentId":\s*"ce-1"/u)
   })
 
   it('dataAttribute: id 模式注入 data-locatorjs-id + c0 注册表条目', async () => {

@@ -19,6 +19,8 @@ export interface FiberLike {
   elementType?: unknown
   /** 父 fiber（向上遍历用）。 */
   return: FiberLike | null
+  /** React 18/19 dev 构建：创建该 fiber 的父组件 fiber（渲染树链上溯通道）。 */
+  _debugOwner?: FiberLike | null
   /** React dev 构建才有：组件源码位置。 */
   _debugSource?: FiberDebugSource | null
   /** React 19 dev 构建：可能携带 `_debugSource` 的 owner 栈信息。 */
@@ -115,6 +117,72 @@ export function findComponentFiber(fiber: FiberLike | null): FiberLike | null {
     current = current.return
   }
   return null
+}
+
+/** 宿主外壳包装组件名（渲染树链噪音）：Slot 槽位注入层 / Root 级入口包装
+ *  （DSH 的 Slot 结构 = SlotErrorBoundary + RootEntry + SlotOutlet 交替嵌套，
+ *   会成串污染链）。名称精确匹配，不泛化（ErrorBoundary 等业务封装保留）。 */
+const CHAIN_NOISE_NAMES = new Set([
+  'SlotOutlet',
+  'SlotErrorBoundary',
+  'RootEntry',
+  'RootOutlet',
+])
+
+/** 渲染链过滤名单：显示名匹配这些的 fiber 不进链（React/宿主外壳包装噪音）。 */
+function isChainNoise(name: string | undefined): boolean {
+  if (name === undefined || name === '') return true
+  if (name.startsWith('Symbol(')) return true
+  if (CHAIN_NOISE_NAMES.has(name)) return true
+  // Context.Provider / Context.Consumer、React.memo 未设 displayName 时的显式标记
+  return /Context\.(?:Provider|Consumer)$/u.test(name)
+}
+
+/** 链节点：组件名 + 组件声明位置（字段缺失时省略；path/line/column 与 hit 同级）。 */
+export interface ChainNode {
+  name: string
+  /** 组件声明所在文件（dev React `_debugSource.fileName`；注册表通道为文件绝对路径）。 */
+  path?: string
+  line?: number
+  column?: number
+}
+
+/**
+ * 沿渲染树收集组件链（dev React 才有 `_debugOwner`）：
+ * 从给定组件 fiber 开始逐层上溯到根，返回 `[最外层, …, 最内层]` 的组件节点，
+ * 每层携带该组件的声明位置（`_debugSource`，dev React 注入的 `__source`）。
+ * 通道：`_debugOwner` 优先；缺失时沿 `return` 链找最近组件 fiber（旧 React
+ * /无损 owner 的宿主）。上限 24 层 + 环保护；全部噪音/空名则返回 undefined。
+ */
+export function collectFiberChain(fiber: FiberLike | null): ChainNode[] | undefined {
+  if (fiber === null) return undefined
+  const chain: ChainNode[] = []
+  const visited = new Set<FiberLike>()
+  let current: FiberLike | null = fiber
+  let guard = 0
+  while (current !== null && guard < 24) {
+    if (visited.has(current)) break
+    visited.add(current)
+    // owner 为 null 时可退化为 return 链上溯（跳过 host/中间节点找组件）
+    let owner: FiberLike | null = current._debugOwner ?? null
+    if (owner === null || !isComponentType(owner.type)) {
+      let parent: FiberLike | null = current.return
+      while (parent !== null && !isComponentType(parent.type)) parent = parent.return
+      owner = parent
+    }
+    const name = getComponentName(current)
+    if (!isChainNoise(name) && name !== undefined) {
+      const source = getDebugSource(current)
+      const node: ChainNode = { name }
+      if (source?.fileName !== undefined) node.path = source.fileName
+      if (source?.lineNumber !== undefined) node.line = source.lineNumber
+      if (source?.columnNumber !== undefined) node.column = source.columnNumber
+      chain.unshift(node)
+    }
+    current = owner
+    guard += 1
+  }
+  return chain.length === 0 ? undefined : chain
 }
 
 /** 从组件类型提取显示名（displayName 优先于 name）。 */

@@ -51,11 +51,13 @@ import { probeHost } from './host-probe'
 import { instrumentDir } from '../instrument'
 import {
   ensureRoots,
+  findDcfMountRowIds,
   hasInvalidOverridesBlock,
   listRoots,
   normalizeLiteralRoot,
   profilePatchPath,
   removeRoots,
+  ROOTS_TARGET_ID,
   RootsEditError,
 } from './roots'
 
@@ -70,17 +72,18 @@ const TSDOWN_IMPORT = `import { codeFinderTsdown } from '${PACKAGE}/tsdown'`
 // 的 disabled 必须只读 process.env 的静态表达式，不可引用其他行的 disabled，
 // 否则两行互相读对方会无限递归（Maximum call stack size exceeded）。
 // 幂等/删除按 name（任何 id 的已有同类挂载都会被识别，避免 /code-finder/api 双注册）。
-// disabled 与构建期 codeFinderEnabled（src/build/transform.ts）**完全对称**：
+// disabled 与构建期 codeFinderEnabled（src/build/transform.ts）**同一判定**：
 // `!!js` 在 node 端 loader 求值，读真实 process.env——只有明确的 dev 语义才
-// 挂载：`NODE_ENV === 'development'`（或 CODE_FINDER=1/on/true 强制开、且未被
-// CODE_FINDER=0/off/false 强制关）。未设 NODE_ENV（undefined）与 production
+// 挂载：`NODE_ENV === 'development'`。未设 NODE_ENV（undefined）与 production
 // 一样视为非 dev → disabled=true，entry 不 apply（host 半与 client 半都不
-// 挂载）——空壳 overlay 完全不存在，与"构建期无注入"一致。单行静态 disabled
-// （只读 env、不读其他行的 disabled）不会递归。
+// 挂载）——空壳 overlay 完全不存在，与"构建期无注入"一致。production 语义
+// 下要挂载的接入方改用构建侧 enabled 参数（client 半跟随 define，host 半
+// 用 dcf 的 roots 覆盖即可）。单行静态 disabled（只读 env、不读其他行的
+// disabled）不会递归。
 const CORDIS_ROW = [
   "- id: dsh-code-finder-mount",
   "name: '@havocrao/dsh-code-finder'",
-  'disabled: !!js "(process.env.NODE_ENV !== \'development\' || [\'0\',\'off\',\'false\'].includes(process.env.CODE_FINDER)) && ![\'1\',\'on\',\'true\'].includes(process.env.CODE_FINDER)"',
+  'disabled: !!js "process.env.NODE_ENV !== \'development\'"',
 ].join('\n')
 
 interface Options {
@@ -100,6 +103,8 @@ interface Options {
     sub: 'list' | 'add' | 'remove' | undefined
     profile: string | undefined
     paths: string[]
+    /** roots 补丁目标挂载行 id（默认官方行 dsh-code-finder；宿主自定义 id 时用 --entry-id）。 */
+    entryId: string | undefined
   }
   /** ensure 的目标项目目录（位置参数，按进程 cwd 解析为绝对路径）。 */
   readonly ensureDir: string | undefined
@@ -176,8 +181,10 @@ function scanCordisPatch(root: string): string[] {
         walk(absolute, depth + 1)
       } else if (entry === 'cordis.patch.yml' || entry === 'cordis.patch.yaml') {
         found.push(absolute)
+        // 不设数量上限：诊断（status --profile 的挂载行 id 检查）需要看到全部
+        // 补丁——上限会截掉后续目录的 patch（如 harness 的 web-app 排在
+        // acp-app/base/headless 之后）。扫描成本受 depth≤4 + skip 集合约束。
       }
-      if (found.length >= 3) return
     }
   }
   walk(root, 1)
@@ -456,6 +463,19 @@ async function cmdStatus(options: Options): Promise<number> {
       if (hasInvalidOverridesBlock(source)) {
         log(options, '  ⚠ 检测到无效的 `- overrides:` 包裹块（loader 不识别，boot 会告警并跳过）。')
       }
+      // 宿主自定义挂载行 id 诊断：roots 补丁按 id 定位，若仓库里的生效挂载行
+      // 不是官方行 id（如 harness 的 dsh-code-finder-mount），按官方行写的
+      // 覆盖会落到被 double-mount 守卫禁用（或不存在）的行上——静默失效。
+      // 深层扫描（最多 4 层，跳过 node_modules/lib 等）：harness 型仓库的
+      // 挂载行在 packages/bundle/web-app/cordis.patch.yml，不在根目录。
+      const patchFiles = [...files.cordis, ...scanCordisPatch(options.root)]
+      const repoRows = patchFiles.flatMap(path => findDcfMountRowIds(readSource(path) ?? ''))
+      const nonDefault = [...new Set(repoRows)].filter(id => id !== ROOTS_TARGET_ID)
+      if (nonDefault.length > 0) {
+        log(options, `  ⚠ 检测到自定义 id 的 dcf 挂载行: ${nonDefault.join(', ')}（≠ roots 补丁目标 ${ROOTS_TARGET_ID}）。`)
+        log(options, `    若生效的是这些行：dcf roots add ${profile} <src> --entry-id ${nonDefault[0] ?? ''}`)
+        log(options, '    （对已禁用行打 roots 补丁是静默 no-op：config 改了，行不挂载。）')
+      }
     }
     if (options.noHostCheck) {
       log(options, '  - 宿主探测跳过（--no-host-check）')
@@ -556,8 +576,8 @@ function uninstallDependency(options: Options, root: string): void {
 
 /**
  * `dcf instrument <dir...> [--write] [--out <out>]`：无 bundler 项目的独立
- * 注入。默认 dry-run（只报告）；--write 落盘（或镜像到 --out）。生产语义
- * （非 dev、无 CODE_FINDER 强制）整体 no-op。transform 异常逐文件 warn +
+ * 注入。默认 dry-run（只报告）；--write 落盘（或镜像到 --out）。非 dev 语义
+ * （NODE_ENV 非 development 且未显式 enabled）整体 no-op。transform 异常逐文件 warn +
  * 跳过，不中断。
  */
 async function cmdInstrument(options: Options): Promise<number> {
@@ -591,7 +611,7 @@ async function cmdInstrument(options: Options): Promise<number> {
     }
   }
   if (disabled) {
-    log(options, '未注入：当前非 dev 语义。以 NODE_ENV=development（或 CODE_FINDER=1）运行才会注入。')
+    log(options, '未注入：当前非 dev 语义。以 NODE_ENV=development 运行（或构建侧显式 enabled）才会注入。')
   } else {
     log(options, `instrument 完成：${changed}/${total} 个文件注入（${options.write ? '已写入' : 'dry-run，加 --write 落盘'}），${errors} 个错误`)
   }
@@ -782,11 +802,15 @@ async function cmdEnsure(options: Options): Promise<number> {
   }
 
   // ── 2. profile roots ───────────────────────────────────────────────────────
+  const entryId = options.roots.entryId ?? ROOTS_TARGET_ID
+  if (options.roots.entryId !== undefined) {
+    log(options, `  roots 目标挂载行 id: ${entryId}`)
+  }
   const additions = options.extraRoots.length > 0 ? options.extraRoots : [defaultUiRoot(root)]
   log(options, `[2/4] profile roots（${patchPath}）…`)
   let result: ReturnType<typeof ensureRoots>
   try {
-    result = ensureRoots(read() ?? '', additions, root)
+    result = ensureRoots(read() ?? '', additions, root, entryId)
   } catch (error) {
     if (error instanceof RootsEditError) {
       console.error(`dsh-code-finder: ${error.message}`)
@@ -843,7 +867,7 @@ async function cmdEnsure(options: Options): Promise<number> {
     injected = probeArtifacts(root)
     if (injected === 0) {
       log(options, '  ⚠ 构建完成但产物无 data-locatorjs 注入（0 处）。')
-      log(options, '    确认该脚本是 dev 语义构建（NODE_ENV=development / CODE_FINDER=1）且构建配置已接 codeFinderTsdown/Vite；')
+      log(options, '    确认该脚本是 dev 语义构建（NODE_ENV=development）且构建配置已接 codeFinderTsdown/Vite；')
       log(options, '    或该插件没有前端 client bundle（无注入是正常的，搜索层仍可给出 path）。')
       return 1
     }
@@ -854,9 +878,9 @@ async function cmdEnsure(options: Options): Promise<number> {
   log(options, `  ${injected > 0 ? '✔' : '✗'} 构建产物 data-locatorjs 注入: ${injected} 处`)
   const after = read()
   if (after !== undefined) {
-    const items = listRoots(after)
+    const items = listRoots(after, root, entryId)
     if (items !== null && items.length > 0) {
-      log(options, `  ✔ profile roots 覆盖（${patchPath}）:`)
+      log(options, `  ✔ profile roots 覆盖（${patchPath}, id: ${entryId}）:`)
       for (const item of items) log(options, `      ${item.raw.trim()}`)
     } else {
       log(options, `  ✗ profile ${profile} 无 dcf roots 覆盖`)
@@ -930,6 +954,10 @@ function cmdRoots(options: Options): number {
     throw error
   }
   const { dir, patchPath } = resolveProfile(profile)
+  const entryId = options.roots.entryId ?? ROOTS_TARGET_ID
+  if (options.roots.entryId !== undefined) {
+    log(options, `dcf roots → 目标挂载行 id: ${entryId}`)
+  }
   const read = (): string | undefined => (existsSync(patchPath) ? readSource(patchPath) : undefined)
   const report = (message: string): void => log(options, message)
 
@@ -938,19 +966,19 @@ function cmdRoots(options: Options): number {
       report(`dcf roots list ${profile} @ ${dir}`)
       const source = read()
       if (source === undefined) {
-        report('  未配置 roots 覆盖（host 半使用默认 roots：~/.dsh/source/current + <host cwd>/src）')
+        report('  未配置 roots 覆盖（host 半使用默认 roots：~/.dsh/source/current + <host cwd>/src + monorepo packages/apps）')
         return 0
       }
-      const items = listRoots(source)
+      const items = listRoots(source, options.root, entryId)
       if (items === null || items.length === 0) {
-        report(`  ${basenameDisplay(patchPath)}: 无 dcf roots 覆盖（host 半使用默认 roots）`)
+        report(`  ${basenameDisplay(patchPath)}: 无 dcf roots 覆盖（${entryId}；host 半使用默认 roots）`)
       } else {
-        report(`  ${basenameDisplay(patchPath)} 当前覆盖:`)
+        report(`  ${basenameDisplay(patchPath)} 当前覆盖 (id: ${entryId}):`)
         for (const item of items) report(`    ${item.raw.trim()}`)
       }
       if (hasInvalidOverridesBlock(source)) {
         report('  ⚠ 检测到无效的 `- overrides:` 包裹块（当前 loader 不识别，boot 时会告警并跳过）；')
-        report('    正确写法是顶层补丁项 `- id: dsh-code-finder` + config.roots（本 CLI 即按此管理）。')
+        report(`    正确写法是顶层补丁项 "- id: ${entryId}" + config.roots（本 CLI 即按此管理）。`)
       }
       return 0
     }
@@ -965,7 +993,7 @@ function cmdRoots(options: Options): number {
       const source = read() ?? ''
       let result
       try {
-        result = ensureRoots(source, options.roots.paths, options.root)
+        result = ensureRoots(source, options.roots.paths, options.root, entryId)
       } catch (error) {
         if (error instanceof RootsEditError) {
           console.error(`dsh-code-finder: ${error.message}`)
@@ -991,7 +1019,7 @@ function cmdRoots(options: Options): number {
       for (const path of result.skipped) report(`  · ${displayRoot(path, options.root)}（已存在，跳过）`)
       if (result.changed && hasInvalidOverridesBlock(result.source)) {
         report('  ⚠ 文件中仍存在无效的 `- overrides:` 包裹块（loader 不识别，boot 会告警并跳过）；')
-        report('    可手动删除旧块，或确认其内容已由上方 `- id: dsh-code-finder` 补丁项取代。')
+        report(`    可手动删除旧块，或确认其内容已由上方 "- id: ${entryId}" 补丁项取代。`)
       }
       report(result.changed ? `  ✔ 已写入 ${patchPath}` : `  ✔ 无改动（${basenameDisplay(patchPath)} 已含全部目标 roots）`)
       return 0
@@ -1003,13 +1031,13 @@ function cmdRoots(options: Options): number {
         report('  未配置 roots 覆盖，无可移除')
         return 0
       }
-      const result = removeRoots(source, options.roots.paths, options.root)
+      const result = removeRoots(source, options.roots.paths, options.root, entryId)
       if (result.changed) writeSource(patchPath, result.source)
       for (const path of result.removed) report(`  - ${displayRoot(path, options.root)} 已移除`)
       for (const path of result.missing) report(`  · ${path}（未在覆盖中找到）`)
       if (result.changed) {
         const after = readSource(patchPath)
-        if (after === undefined || listRoots(after) === null) {
+        if (after === undefined || listRoots(after, options.root, entryId) === null) {
           report('  ✔ 覆盖已清空并删除整块（host 半恢复默认 roots）')
         } else {
           report(`  ✔ 已写入 ${patchPath}`)
@@ -1045,7 +1073,7 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
   let script: string | undefined
   const extraRoots: string[] = []
   let noHostCheck = false
-  const roots: Options['roots'] = { sub: undefined, profile: undefined, paths: [] }
+  const roots: Options['roots'] = { sub: undefined, profile: undefined, paths: [], entryId: undefined }
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === undefined) continue
@@ -1095,6 +1123,18 @@ function parseArgs(args: readonly string[]): { command: string | undefined, opti
         const value = args[index + 1]
         if (value === undefined) throw new CliUsageError('--root 需要一个值（额外 profile root 路径）')
         extraRoots.push(value)
+        index += 1
+        break
+      }
+      case '--entry-id': {
+        if (command !== 'roots' && command !== 'ensure') {
+          throw new CliUsageError('--entry-id 只适用于 roots 子命令（roots 补丁的目标挂载行 id）')
+        }
+        const value = args[index + 1]
+        if (value === undefined || value.trim() === '' || value.startsWith('-')) {
+          throw new CliUsageError('--entry-id 需要一个值（挂载行 id，如 dsh-code-finder-mount）')
+        }
+        roots.entryId = value
         index += 1
         break
       }
@@ -1161,7 +1201,7 @@ class CliUsageError extends Error {}
 
 /** usage line shared by parse errors and missing subcommand. */
 function usage(): string {
-  return 'usage: dcf (dsh-code-finder) <init|status [--profile <name>]|ensure <dir> --profile <name>|remove|roots <list|add|remove <profile> [root...]>|instrument [dir...] [--write] [--out <dir>]> [--cwd <dir>] [--no-install] [--keep-deps] [--link <path>] [--no-build] [--script <name>] [--root <path>] [--host <url>] [--no-host-check] [--quiet]'
+  return 'usage: dcf (dsh-code-finder) <init|status [--profile <name>]|ensure <dir> --profile <name>|remove|roots <list|add|remove <profile> [root...]>|instrument [dir...] [--write] [--out <dir>]> [--cwd <dir>] [--no-install] [--keep-deps] [--link <path>] [--no-build] [--script <name>] [--root <path>] [--entry-id <id>] [--host <url>] [--no-host-check] [--quiet]'
 }
 
 /** --help / -h output. */
@@ -1191,7 +1231,10 @@ function printHelp(): void {
   console.log('    roots add <profile> <root...>            幂等追加 roots（~ 与相对路径按 --cwd 归一化）')
   console.log('    roots remove <profile> <root...>         移除指定 roots；清空时删除整块恢复默认')
   console.log('    覆盖是完全替换（非合并）：创建新块时自动播种两条默认根')
-  console.log('    （默认 roots：~/.dsh/source/current + <host cwd>/src；profile 位于 $DSH_HOME/profiles）')
+  console.log('    --entry-id <id>   roots 补丁的目标挂载行 id（默认 dsh-code-finder；')
+  console.log('                       宿主自定义挂载行 id 时用，如 dsh-code-finder-mount）')
+  console.log('    （默认 roots：~/.dsh/source/current + <host cwd>/src + monorepo packages/apps；')
+  console.log('     profile 位于 $DSH_HOME/profiles）')
   console.log('')
   console.log('选项:')
   console.log('  --cwd <dir>          目标项目根目录（默认当前目录；roots 的相对路径按它解析）')
@@ -1201,6 +1244,7 @@ function printHelp(): void {
   console.log('  --no-build           ensure 跳过构建阶段')
   console.log('  --script <name>      ensure 指定 dev 构建脚本名（默认自动识别 build:dev 等）')
   console.log('  --root <path>        ensure 额外追加的 profile root（可重复；默认 <dir>/src）')
+  console.log('  --entry-id <id>     roots/ensure 的 roots 补丁目标挂载行 id（默认 dsh-code-finder）')
   console.log('  --profile <name>     ensure 必需；status 附加 profile/宿主检查')
   console.log('  --host <url>         宿主 base URL（默认 http://127.0.0.1:3080）')
   console.log('  --no-host-check      跳过宿主探测（client URL / search API，离线场景）')
@@ -1211,7 +1255,7 @@ function printHelp(): void {
   console.log('  -h, --help           显示本帮助')
   console.log('')
   console.log('接线后需以 dev 语义构建（NODE_ENV=development）才产生 data-locatorjs 注入；')
-  console.log('instrument 同理：NODE_ENV=development（或 CODE_FINDER=1）才注入。')
+  console.log('instrument 同理：NODE_ENV=development 才注入（enabled 参数可覆盖）。')
   console.log('ensure 的宿主探测只读：GET /plugins/<name>/client.js + POST /code-finder/api/search。')
   console.log('重启宿主是破坏性操作，dcf 只输出指令（如 dsh web stop && dsh web），不代你执行。')
 }

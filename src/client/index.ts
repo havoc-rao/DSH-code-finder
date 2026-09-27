@@ -11,7 +11,8 @@
  * - **mousemove** 按住热键 → 解析链 ①②③ → overlay.show；④ 源码搜索 / ⑤
  *   sourcemap 反查异步补位；
  * - **click** 按住热键 → 阻止默认行为 → `onClick(hit)`（默认复制
- *   `path:line`，无路径时复制组件名）；
+ *   `<父链> path:line`——链长 >1 时带完整组件路径（每层 `Name (file:line)`），
+ *   全程不输出列；无路径时复制组件名）；
  * - **destroy()** 解绑全部监听、撤掉命中层并移除 overlay。
  *
  * 生产防护：`isProductionRuntime()` 命中时返回空操作句柄（调用方按环境懒加载
@@ -19,7 +20,7 @@
  */
 import { findComponentFiber, findFiberByDomNode } from './fiber'
 import { createOverlay, type OverlayHandle } from './overlay'
-import { isBuildArtifactPath, resolveHit, type CodeFinderHit } from './resolve'
+import { findLocatorElement, isBuildArtifactPath, resolveHit, type CodeFinderHit } from './resolve'
 
 /** 热键组合。 */
 export type CodeFinderHotkeys = 'alt+shift' | 'alt' | 'cmd+shift' | null
@@ -27,7 +28,7 @@ export type CodeFinderHotkeys = 'alt+shift' | 'alt' | 'cmd+shift' | null
 export interface CodeFinderOptions {
   /** 触发热键；默认 'alt+shift'；null 关闭热键（overlay 仍可手动调用）。 */
   hotkeys?: CodeFinderHotkeys
-  /** 点击动作；默认复制 `path:line` 到剪贴板。 */
+  /** 点击动作；默认复制 `<父链> path:line`（链长 1 不带链；每层 `Name (file:line)`，无列）到剪贴板。 */
   onClick?: (hit: CodeFinderHit) => void
   /** 源码搜索端点（cordis host 半提供时传入）；默认 undefined = 关闭第④层。 */
   searchEndpoint?: string
@@ -74,7 +75,28 @@ const SEARCH_CACHE_TTL_MS = 30_000
  */
 const PICK_LAYER_Z_INDEX = 2147482998
 
-let active: { destroy(): void } | null = null
+/**
+ * 跨模块单例句柄。同一页面可能沿多条加载路径执行本模块（boot 图批次 combo
+ * 与单行 combo 等），模块级 `active` 互相不可见——若同时存在两份命中层，
+ * 各自的 pointer-events 切换会互相抵消（elementFromPoint 总命中另一实例的
+ * 层），overlay 将永远无法显示。把句柄提升到 globalThis：后到的实例先销毁
+ * 先到的，全页恒为一份运行时。HMR/卸载的 destroy 只清自己的实例。
+ */
+const RUNTIME_STATE_KEY = '__dshCodeFinderRuntime__'
+const state = ((): { active: { destroy(): void } | null } => {
+  const holder = globalThis as { __dshCodeFinderRuntime__?: { active: { destroy(): void } | null } }
+  if (holder.__dshCodeFinderRuntime__ === undefined) {
+    const created: { active: { destroy(): void } | null } = { active: null }
+    Reflect.defineProperty(holder, RUNTIME_STATE_KEY, {
+      value: created,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    })
+    return created
+  }
+  return holder.__dshCodeFinderRuntime__
+})()
 
 /**
  * 是否为生产运行环境。判定规则：**显式环境用 process.env 决定，未知环境
@@ -115,16 +137,17 @@ function isEditableTarget(target: EventTarget | null): boolean {
  * 启动（或重启）code-finder 运行时。重复调用会先销毁上一次的实例。
  */
 export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHandle {
-  if (active !== null) {
-    active.destroy()
-    active = null
+  if (state.active !== null) {
+    state.active.destroy()
+    state.active = null
   }
   if (isProductionRuntime()) {
     if (options.debug) console.debug('[dsh-code-finder] production runtime, overlay disabled')
     return { destroy() {} }
   }
 
-  const hotkeys = options.hotkeys ?? 'alt+shift'
+  // 注意不能用 `?? 'alt+shift'`：显式传 null（关闭热键）会被吞成默认值。
+  const hotkeys = options.hotkeys === undefined ? 'alt+shift' : options.hotkeys
   const overlay = createOverlay()
   const debug = options.debug === true
   const log = (...args: unknown[]): void => {
@@ -372,32 +395,37 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
       hide()
       return
     }
+    // 注入属性只挂在 JSX 元素本体上：内部子元素（文本/span 等）没有属性，
+    // 生产 React 宿主（无 fiber）下 hover 子元素会「连名字都没有」。上溯到
+    // 最近带 data-locatorjs 的祖先，蓝框框住注入边界（LocatorJS 同款行为）；
+    // fiber 也从该祖先取（dev React 下同一组件，不影响名字/位置）。
+    const locatorElement = findLocatorElement(target) ?? target
     const gen = ++generation
-    lastElement = target
-    const fiber = findFiberByDomNode(target)
+    lastElement = locatorElement
+    const fiber = findFiberByDomNode(locatorElement)
     const componentFiber = fiber === null ? null : findComponentFiber(fiber)
-    const syncHit = resolveHit(target, componentFiber)
+    const syncHit = resolveHit(locatorElement, componentFiber)
     if (syncHit === null || (syncHit.source === 'name-only' && options.showNamesOnly === false)) {
       hide()
       return
     }
     lastHit = syncHit
-    overlay.show(target, syncHit)
+    overlay.show(locatorElement, syncHit)
     // ④ 搜索补位：仅当名字级命中且有搜索端点时异步升级
     if (syncHit.source === 'name-only' && options.searchEndpoint !== undefined) {
       void enrichWithSearch(syncHit, gen).then(upgraded => {
-        if (gen !== generation || lastElement !== target) return
+        if (gen !== generation || lastElement !== locatorElement) return
         lastHit = upgraded
-        overlay.show(target, upgraded)
+        overlay.show(locatorElement, upgraded)
       })
       return
     }
     // ⑤ sourcemap 反查补位：syncHit 已带路径但指向构建产物时异步升级为源码坐标
     if (options.sourcemapEndpoint !== undefined) {
       void enrichWithSourcemap(syncHit, gen).then(upgraded => {
-        if (gen !== generation || lastElement !== target) return
+        if (gen !== generation || lastElement !== locatorElement) return
         lastHit = upgraded
-        overlay.show(target, upgraded)
+        overlay.show(locatorElement, upgraded)
       })
     }
   }
@@ -407,12 +435,15 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
     // 命中层接管时 event.target 是层本身，真正的元素要按坐标反查。
     const target = resolveEventElement(event)
     if (target === null || isEditableTarget(target)) return
+    // 与 mousemove 同款上溯：点击落在注入元素的内部子元素上时，也用最近的
+    // 注入祖先解析（否则 prod React 宿主下连名字都没有，点击无动作）。
+    const locatorElement = findLocatorElement(target) ?? target
     // 用当前命中的 hit（mousemove 已解析）；事件目标不一致时重新解析一次。
     let hit = lastHit
-    if (target !== lastElement) {
-      const fiber = findFiberByDomNode(target)
+    if (locatorElement !== lastElement) {
+      const fiber = findFiberByDomNode(locatorElement)
       const componentFiber = fiber === null ? null : findComponentFiber(fiber)
-      hit = resolveHit(target, componentFiber)
+      hit = resolveHit(locatorElement, componentFiber)
     }
     if (hit === null) return
     event.preventDefault()
@@ -428,10 +459,22 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
       }
       return
     }
-    // 默认动作：复制 path:line（无路径时复制组件名）
-    const text = hit.path !== undefined
-      ? `${hit.path}${hit.line !== undefined ? `:${hit.line}` : ''}`
-      : hit.name
+    // 默认动作：复制 `<父链> path:line`（链长 1 不带链；链节点携带各自的
+    // 声明位置 `Name (path:line)`；无路径时复制组件名）。全程不输出列。
+    let text = hit.name
+    if (hit.path !== undefined) {
+      const location = `${hit.path}${hit.line !== undefined ? `:${hit.line}` : ''}`
+      if (hit.chain !== undefined && hit.chain.length > 1) {
+        const chainText = hit.chain.map((node) => {
+          if (node.path === undefined) return node.name
+          const nodeLoc = `${node.path}${node.line !== undefined ? `:${node.line}` : ''}`
+          return `${node.name} (${nodeLoc})`
+        }).join(' › ')
+        text = `<${chainText}> ${location}`
+      } else {
+        text = location
+      }
+    }
     void copyText(text).then(ok => {
       overlay.toast(ok ? `已复制 ${text}` : '复制失败')
     })
@@ -472,10 +515,10 @@ export function setupCodeFinder(options: CodeFinderOptions = {}): CodeFinderHand
       hide()
       unmountPickLayer()
       overlay.destroy()
-      if (active === handle) active = null
+      if (state.active === handle) state.active = null
     },
   }
-  active = handle
+  state.active = handle
   return handle
 }
 

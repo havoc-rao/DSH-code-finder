@@ -26,11 +26,18 @@ runtime 三档）。
 hover 一个元素时按优先级取源码位置：
 
 1. **构建期注入**（`data-locatorjs` 属性 + `__LOCATOR_DATA__` 注册表）——应用自己
-   构建的组件，**元素级精确行号**，生产宿主环境下依然有效；
+   构建的组件，**元素级精确行号**，生产宿主环境下依然有效。运行时还会沿 DOM
+   上溯取**最近的注入祖先**：属性只挂在 JSX 元素本体上，hover 组件内部的文本/
+   `<span>` 等子元素同样命中（生产 React 宿主没有 fiber 信息时这一条是唯一
+   路径，蓝框框住注入边界，与 LocatorJS 扩展行为一致）；
 2. **fiber 遍历**（`_debugSource` / `_debugInfo`）——dev React 宿主（如 vite dev
    server）下自动可用，零改动覆盖宿主 UI；
 3. **组件名兜底** + **源码搜索路由**（`/code-finder/api/search`）——生产宿主组件
-   至少显示名字，搜索命中时给出位置；
+   至少显示名字，搜索命中时给出位置。host 半默认 roots 除
+   `~/.dsh/source/current` + `<host cwd>/src` 外，还会在 **pnpm monorepo 布局
+   （`<host cwd>/packages`、`<host cwd>/apps`）存在时自动补位**（路径段排除
+   node_modules/lib/dist，只索引各包 `src/`）——deepseek-harness 型
+   `packages/client/<name>/src/...` 无需任何配置即可被搜索命中；
 4. **sourcemap 反查路由**（`/code-finder/api/sourcemap`）——①② 给出的路径若指向
    **构建产物**（如 DSH 插件两段式构建的 `lib/types/**/*.js`，tsc 先编译、tsdown
    再打包，dcf 注入时拿到的就是产物路径），host 半读取产物旁 `*.js.map` 把
@@ -64,6 +71,10 @@ npx @havocrao/dsh-code-finder remove    # 完整卸载：精确移除注入 + �
 - DSH 插件「从零到 path 可见」一条命令：`dcf ensure <dir> --profile web`（接线 +
   profile roots + dev 构建 + 宿主探测，重启只提示不代执行；验证用
   `dcf status --cwd <dir> --profile web`），详见 docs/README「一站式」
+- roots 覆盖按**挂载行 id** 定位（默认官方行 `dsh-code-finder`）：宿主侧若用
+  自定义 id 挂载（如 harness 的 `dsh-code-finder-mount`），用
+  `dcf roots add web <src> --entry-id dsh-code-finder-mount` 指向**实际生效行**
+  ——对已被 double-mount 守卫禁用的行打补丁是静默 no-op
 
 ### 发布前：本地 link 安装（包未上 registry 时）
 
