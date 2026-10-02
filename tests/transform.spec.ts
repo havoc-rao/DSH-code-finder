@@ -281,6 +281,49 @@ describe('transformWithCodeFinder: createElement 模式', () => {
     expect(result!.code).not.toContain('data-locatorjs')
   })
 
+  it('factory 形参接收 react（模块化 bundle 形态）注入，非 react 形参不注入', async () => {
+    const factory = [
+      'function createHotkeyPlugin(react, uiPrimitives) {',
+      "  return react.createElement('span', { k: 1 });",
+      '}',
+      '',
+    ].join('\n')
+    const result = await transformWithCodeFinder(factory, FILE, { enabled: true })
+    expect(result).not.toBeNull()
+
+    // 形参名即 react → 注入data-locatorjs
+    expect(result!.code).toContain('data-locatorjs')
+
+    // 其它形参名（r）不注入
+    const other = [
+      'function createPlugin(r, ui) {',
+      "  return r.createElement('span', { k: 1 });",
+      '}',
+      '',
+    ].join('\n')
+    expect((await transformWithCodeFinder(other, FILE, { enabled: true }))!.code).not.toContain('data-locatorjs')
+
+    // 解构简写形态：const { react } = rt —— 从 runtime 容器解构
+    const destructured = [
+      'function createModule(rt) {',
+      '  const { state, react, uiPrimitives } = rt;',
+      "  return react.createElement('span', { k: 2 });",
+      '}',
+      '',
+    ].join('\n')
+    expect((await transformWithCodeFinder(destructured, FILE, { enabled: true }))!.code).toContain('data-locatorjs')
+
+    // 解构出非 react 名字（r）不注入
+    const destructuredOther = [
+      'function createModule(rt) {',
+      '  const { r } = rt;',
+      "  return r.createElement('span', { k: 2 });",
+      '}',
+      '',
+    ].join('\n')
+    expect((await transformWithCodeFinder(destructuredOther, FILE, { enabled: true }))!.code).not.toContain('data-locatorjs')
+  })
+
   it('重复 instrument 幂等：已注入 key 跳过、不重复注入', async () => {
     const once = await transformWithCodeFinder(SAMPLE_CREATE_ELEMENT, FILE, { enabled: true })
     const twice = await transformWithCodeFinder(once!.code, FILE, { enabled: true })

@@ -251,8 +251,17 @@ function reactBindingAllowed(t: typeof BabelTypes, path: NodePath, name: string)
   return source !== undefined && REACT_IMPORT_SOURCES.includes(source)
 }
 
-/** 溯源绑定到 import 来源；非 react 系来源返回 undefined。 */
-function importSourceOf(t: typeof BabelTypes, binding: { path: NodePath | null }): string | undefined {
+/** 溯源绑定到 import 来源；非 react 系来源返回 undefined。
+ *  类型说明：@babel/traverse 未直接安装（仅经 @babel/core 传递依赖，本仓库
+ *  node_modules 未链接其类型），此处按 @babel/traverse 的 Binding 形状镜像：
+ *  `path` 取可空（运行时防御旧版本 babel），`kind` 取 @types/babel__traverse
+ *  的 BindingKind 联合；`scope.getBinding()` 返回的实际对象结构兼容。 */
+type Binding = {
+  path: NodePath | null
+  kind: 'var' | 'let' | 'const' | 'module' | 'hoisted' | 'param' | 'local' | 'unknown'
+}
+
+function importSourceOf(t: typeof BabelTypes, binding: Binding): string | undefined {
   const path = binding.path
   if (path === null) return undefined
   if (path.isImportSpecifier() || path.isImportDefaultSpecifier() || path.isImportNamespaceSpecifier()) {
@@ -290,6 +299,33 @@ function importSourceOf(t: typeof BabelTypes, binding: { path: NodePath | null }
       if (reactBinding === undefined) return 'react' // 全局 React 解构
       return importSourceOf(t, reactBinding)
     }
+  }
+  // 形参 / 解构简写形态均按「名字即 react」信任小写 `react`（DSH ModuleLoader
+  // 种子表把外部依赖作为 factory 实参注入——`load(entry)(require("react"), …)`，
+  // dsh-hotkey 等零构建 bundle 的常态；模块再从 runtime 容器 `const { react } = rt`
+  // 解构使用）。仅信任小写 react：大写 `React` 形参仍视为本地遮蔽（classic
+  // script 全局 React 的惯例名，遮蔽时保持不注入，见 tests/transform.spec.ts
+  // 的「React 被本地遮蔽」用例）。
+  if (path.isIdentifier() && path.node.name === 'react') {
+    // factory 形参：function createHotkeyPlugin(react, uiPrimitives) / (react) => …
+    if (binding.kind === 'param') return 'react'
+    // 解构简写：const { …, react, … } = rt —— 部分 babel 版本 binding.path 落在
+    // ObjectPattern 内的值侧 Identifier（父链 ObjectProperty → ObjectPattern）。
+    if (path.parentPath?.isObjectProperty() && path.parentPath.parentPath?.isObjectPattern()) return 'react'
+    return undefined
+  }
+  // 实测（@babel/core 7.29）：`const { react } = rt` 的 binding.path 归一为整个
+  // VariableDeclarator（kind=const），而非属性值 Identifier。等价判据（任务书
+  // 的「父链上找 ObjectPattern 且其父为 VariableDeclarator」）：id 是
+  // ObjectPattern 且含名字为 `react` 的对象属性（简写 / 同名属性均可）。
+  if (path.isVariableDeclarator()
+    && t.isObjectPattern(path.node.id)
+    && path.node.id.properties.some((property) =>
+      t.isObjectProperty(property)
+      && !property.computed
+      && t.isIdentifier(property.value)
+      && property.value.name === 'react')) {
+    return 'react'
   }
   return undefined
 }
